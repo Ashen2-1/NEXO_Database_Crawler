@@ -1,4 +1,4 @@
-"""Filesystem layout, atomic writes, resume checks, and JSONL assembly."""
+"""Dataset layout, atomic writes, resume checks, and JSONL assembly."""
 
 from __future__ import annotations
 

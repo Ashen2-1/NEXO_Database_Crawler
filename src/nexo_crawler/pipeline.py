@@ -1,4 +1,4 @@
-"""Source-independent crawl orchestration."""
+"""Source-independent crawling orchestration."""
 
 from __future__ import annotations
 

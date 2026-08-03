@@ -12,5 +12,9 @@ dependencies = []
 [project.scripts]
 nexo-crawler = "nexo_crawler.cli:main"
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.setuptools.packages.find]
+where = ["src"]
 include = ["nexo_crawler*"]

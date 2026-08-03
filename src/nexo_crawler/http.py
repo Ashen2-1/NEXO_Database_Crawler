@@ -1,4 +1,4 @@
-"""Shared HTTP behavior for every source adapter."""
+"""Shared HTTP behavior used by every source adapter."""
 
 from __future__ import annotations
 

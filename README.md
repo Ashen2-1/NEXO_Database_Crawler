@@ -11,20 +11,21 @@ The only source currently implemented is the
 
 ```text
 crawler.py                         compatibility CLI entry point
-nexo_crawler/
-|-- cli.py                         source selection and shared CLI options
-|-- http.py                        rate limiting, retries, JSON and binary requests
-|-- models.py                      canonical schema 2.0
-|-- pipeline.py                    source-independent crawl orchestration
-|-- storage.py                     files, JSONL, manifest, resume checks
-`-- sources/
-    |-- base.py                    SourceAdapter contract
-    `-- metmuseum.py               Met discovery, API fetch, and field mapping
+src/
+`-- nexo_crawler/
+    |-- cli.py                     source selection and shared CLI options
+    |-- http.py                    rate limiting, retries, JSON and binary requests
+    |-- models.py                  canonical schema 2.0
+    |-- pipeline.py                source-independent crawl orchestration
+    |-- storage.py                 files, JSONL, manifest, resume checks
+    `-- sources/
+        |-- base.py                SourceAdapter contract
+        `-- metmuseum.py           Met discovery, API fetch, and field mapping
 ```
 
 A future source implements `SourceAdapter` and is registered in
-`nexo_crawler/sources/__init__.py`. It does not need to duplicate HTTP, image, JSONL, or resume
-code.
+`src/nexo_crawler/sources/__init__.py`. It does not need to duplicate HTTP, image, JSONL, or
+resume code.
 
 ## Canonical metadata
 
@@ -118,8 +119,19 @@ primary image only, but the adapter contract supports multiple image candidates 
 
 Python 3.10 or newer is required. No third-party packages or Met API key are required.
 
+The compatibility entry point works directly from a fresh checkout:
+
 ```powershell
 python crawler.py metmuseum --object-id 437329
+```
+
+For normal package development, create a virtual environment and install it in editable mode:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -e .
+nexo-crawler metmuseum --object-id 437329
 ```
 
 ```powershell
@@ -158,8 +170,11 @@ The Met adapter downloads an image only when the API explicitly returns
 ## Tests
 
 ```powershell
+$env:PYTHONPATH = "src"
 python -m unittest discover -s tests -v
 ```
+
+After `python -m pip install -e .`, the `PYTHONPATH` line is unnecessary.
 
 The tests are separated by responsibility: canonical schema, Met adapter, common storage, and
 source-independent pipeline.

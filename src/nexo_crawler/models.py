@@ -1,4 +1,4 @@
-"""Canonical source-independent dataset schema."""
+"""Canonical, source-independent dataset schema."""
 
 from __future__ import annotations
 

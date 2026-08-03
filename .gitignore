@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 .venv/
 dataset/
+*.egg-info/
+build/
+dist/

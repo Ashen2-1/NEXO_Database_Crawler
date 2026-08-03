@@ -1,4 +1,4 @@
-"""Source adapter registry."""
+"""Registry of available external data-source adapters."""
 
 from .metmuseum import MetMuseumAdapter
 

@@ -1,3 +1,5 @@
+"""Run the installed package with ``python -m nexo_crawler``."""
+
 from .cli import main
 
 

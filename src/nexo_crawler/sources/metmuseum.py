@@ -1,4 +1,4 @@
-"""Metropolitan Museum of Art Collection API adapter."""
+"""Adapter for the Metropolitan Museum of Art Collection API."""
 
 from __future__ import annotations
 

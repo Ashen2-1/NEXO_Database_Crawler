@@ -1,4 +1,4 @@
-"""Command-line interface and source adapter selection."""
+"""Command-line interface and registered source-adapter selection."""
 
 from __future__ import annotations
 

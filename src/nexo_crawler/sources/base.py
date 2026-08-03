@@ -1,4 +1,4 @@
-"""Interface implemented by each website or API adapter."""
+"""Adapter interface implemented for each external website or API."""
 
 from __future__ import annotations
 
