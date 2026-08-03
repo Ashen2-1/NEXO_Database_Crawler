@@ -1,96 +1,165 @@
-# NEXO Database Crawler — Met Museum v1
+# NEXO Database Crawler
 
-This first version collects **source-grounded metadata** and public-domain images from the
-[Metropolitan Museum of Art Collection API](https://metmuseum.github.io/). It does not call
-an AI model and does not invent captions, dates, categories, physical properties, facial
-biometrics, or other annotations that are absent from the Met record.
+A modular, multi-source image dataset crawler. Each website or API has a small adapter, while
+HTTP behavior, image downloading, canonical metadata, resume logic, and dataset storage are
+shared. The crawler does not generate AI annotations.
 
-The crawler uses only Python's standard library. No package installation or API key is needed.
+The only source currently implemented is the
+[Metropolitan Museum of Art Collection API](https://metmuseum.github.io/).
 
-## What it outputs
+## Architecture
+
+```text
+crawler.py                         compatibility CLI entry point
+nexo_crawler/
+|-- cli.py                         source selection and shared CLI options
+|-- http.py                        rate limiting, retries, JSON and binary requests
+|-- models.py                      canonical schema 2.0
+|-- pipeline.py                    source-independent crawl orchestration
+|-- storage.py                     files, JSONL, manifest, resume checks
+`-- sources/
+    |-- base.py                    SourceAdapter contract
+    `-- metmuseum.py               Met discovery, API fetch, and field mapping
+```
+
+A future source implements `SourceAdapter` and is registered in
+`nexo_crawler/sources/__init__.py`. It does not need to duplicate HTTP, image, JSONL, or resume
+code.
+
+## Canonical metadata
+
+Every record in `metadata.jsonl` has the same schema. Missing scalar values are JSON `null`;
+known empty lists are `[]`. Empty strings are not used as substitutes for missing data.
+
+```json
+{
+  "schema_version": "2.0",
+  "record_id": "metmuseum:437329:primary",
+  "source": {
+    "key": "metmuseum",
+    "name": "The Metropolitan Museum of Art",
+    "object_id": "437329",
+    "api_url": "https://collectionapi.metmuseum.org/public/collection/v1/objects/437329",
+    "page_url": "https://www.metmuseum.org/art/collection/search/437329",
+    "retrieved_at": "2026-08-03T05:00:00Z",
+    "raw_path": "raw/metmuseum/MET-437329.json"
+  },
+  "image": {
+    "role": "primary",
+    "status": "downloaded",
+    "source_url": "https://images.metmuseum.org/...",
+    "local_path": "images/metmuseum/MET-437329-primary.jpg",
+    "sha256": "...",
+    "bytes": 3618033,
+    "content_type": "image/jpeg"
+  },
+  "title": "The Abduction of the Sabine Women",
+  "description": null,
+  "object_type": "Painting",
+  "category": "Paintings",
+  "creators": [{"name": "Nicolas Poussin", "role": "Artist"}],
+  "creation_date": {
+    "display": "probably 1633-34",
+    "start_year": 1633,
+    "end_year": 1634
+  },
+  "material": "Oil on canvas",
+  "dimensions": "...",
+  "culture": null,
+  "period": null,
+  "country": null,
+  "brand": null,
+  "model": null,
+  "catalog_number": "46.160",
+  "department": "European Paintings",
+  "tags": null,
+  "rights": {
+    "public_domain": true,
+    "rights_text": null,
+    "credit_line": "..."
+  },
+  "annotation": {
+    "status": "source_only",
+    "method": "none",
+    "reviewed": false,
+    "note": "No AI-generated or human-inferred annotations were added."
+  },
+  "source_metadata": {},
+  "crawler_version": "0.2.0"
+}
+```
+
+`source_metadata` contains useful site-specific values that do not belong in the common schema.
+The complete unmodified source response is also retained in `raw/`, so no source data needs to
+be invented to fill a common field.
+
+## Output layout
 
 ```text
 dataset/
-├── images/                  # downloaded public-domain primary images
-│   └── MET-437329.jpg
-├── raw/                     # complete Met API responses for provenance
-│   └── MET-437329.json
-├── records/                 # one normalized, source-only record per object
-│   └── MET-437329.json
-├── metadata.jsonl           # all normalized records, one JSON object per line
-└── crawl_manifest.jsonl     # completed, skipped, and failed crawl events
+|-- images/
+|   `-- metmuseum/
+|       `-- MET-437329-primary.jpg
+|-- raw/
+|   `-- metmuseum/
+|       `-- MET-437329.json
+|-- records/
+|   `-- metmuseum/
+|       `-- MET-437329-primary.json
+|-- metadata.jsonl
+`-- crawl_manifest.jsonl
 ```
 
-`metadata.jsonl` is the main dataset index. Its `image` field is a relative local path when a
-public-domain image was downloaded. Original Met values are kept as clearly named raw fields,
-such as `object_date_raw`, `medium_raw`, and `dimensions_raw`. Every row also links to its raw
-API response and source page.
+Source subdirectories prevent two websites with the same numeric ID from overwriting each
+other. One normalized record represents one image sample. The current Met adapter downloads the
+primary image only, but the adapter contract supports multiple image candidates per source object.
 
-The file is suitable as a clean ingestion layer for later review or annotation. It is **not yet
-a caption-training dataset**, because the script intentionally does not turn titles and catalog
-fields into synthetic image descriptions.
+## Run the Met adapter locally
 
-## Run it locally
+Python 3.10 or newer is required. No third-party packages or Met API key are required.
 
-Use Python 3.10 or newer. From this directory:
+```powershell
+python crawler.py metmuseum --object-id 437329
+```
+
+```powershell
+python crawler.py metmuseum --query "sunflowers" --limit 20 --output dataset
+```
+
+```powershell
+python crawler.py metmuseum --ids-file object_ids.txt --limit 100
+```
+
+The first-version commands remain compatible; omitting the source defaults to `metmuseum`:
 
 ```powershell
 python crawler.py --object-id 437329
 ```
 
-Several known object IDs:
+Metadata only:
 
 ```powershell
-python crawler.py --object-id 437329 --object-id 436535 --output dataset
+python crawler.py metmuseum --query "Anna Atkins" --limit 20 --skip-images
 ```
 
-A text file containing one object ID per line:
+Run `python crawler.py --help` for source selection help, or
+`python crawler.py metmuseum --help` for Met-specific options.
 
-```powershell
-python crawler.py --ids-file object_ids.txt --limit 100 --output dataset
-```
+## Resume and rights behavior
 
-A Met API search (image results only by default):
+Complete records are skipped on later runs. Raw responses cached before an interrupted image
+download are reused, and `metadata.jsonl` is rebuilt from individual record files so it does not
+accumulate duplicate rows.
 
-```powershell
-python crawler.py --query "sunflowers" --limit 20 --output dataset
-```
+The Met adapter downloads an image only when the API explicitly returns
+`isPublicDomain: true`. Other metadata is still stored, with the image status set to
+`not_public_domain`.
 
-Metadata only, without downloading image files:
-
-```powershell
-python crawler.py --query "Anna Atkins" --limit 20 --skip-images
-```
-
-Run `python crawler.py --help` for all options.
-
-## Safe restart behavior
-
-Running the same command again skips complete records. `metadata.jsonl` is rebuilt from the
-individual files in `records/`, so reruns do not append duplicate training rows. Failed objects
-are logged and retried on a later run. Use `--force` only when you intentionally want to fetch
-completed objects again.
-
-The crawler defaults to at most 100 objects per invocation and waits 0.25 seconds between HTTP
-requests. It will never crawl the entire collection merely because it was run without arguments.
-
-## Image rights boundary
-
-The script downloads an image only when the Met API explicitly returns `isPublicDomain: true`.
-All other records can still be saved as metadata, with `image_status` set to
-`not_public_domain`. Keep the Met source URL, credit line, rights field, and public-domain flag
-with any downstream copy of the data.
-
-## Test it
+## Tests
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-## Current scope
-
-- One source: the Met Collection API.
-- Primary images only; additional image URLs are preserved but not downloaded.
-- No browser automation and no HTML scraping.
-- No AI annotation or subjective template fields.
-- Intended to run on a local machine in small, resumable batches.
+The tests are separated by responsibility: canonical schema, Met adapter, common storage, and
+source-independent pipeline.

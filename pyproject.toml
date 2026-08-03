@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexo-database-crawler"
+version = "0.2.0"
+description = "Multi-source, source-grounded image dataset crawler"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+nexo-crawler = "nexo_crawler.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["nexo_crawler*"]
