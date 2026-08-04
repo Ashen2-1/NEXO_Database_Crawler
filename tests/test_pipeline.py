@@ -6,7 +6,7 @@ from pathlib import Path
 
 from nexo_crawler.http import HttpResponse
 from nexo_crawler.models import CanonicalRecord, SourceInfo
-from nexo_crawler.pipeline import CrawlPipeline
+from nexo_crawler.pipeline import CrawlPipeline, utc_now
 from nexo_crawler.sources.base import (
     DiscoveryResult,
     ImageCandidate,
@@ -32,6 +32,7 @@ class FakeAdapter(SourceAdapter):
 
     def __init__(self):
         self.fetches = 0
+        self.title = "From source"
 
     @classmethod
     def add_cli_arguments(cls, parser: argparse.ArgumentParser) -> None:
@@ -42,7 +43,7 @@ class FakeAdapter(SourceAdapter):
 
     def fetch(self, source_id, client):
         self.fetches += 1
-        return {"id": source_id, "title": "From source"}
+        return {"id": source_id, "title": self.title}
 
     def raw_file_stem(self, source_id):
         return source_id
@@ -101,7 +102,7 @@ class PipelineTests(unittest.TestCase):
                 force=False,
             )
 
-            self.assertEqual(pipeline.crawl_one("one"), "completed")
+            self.assertEqual(pipeline.crawl_one("one"), "created")
             self.assertEqual(adapter.fetches, 1)
             self.assertEqual(client.image_requests, 1)
             self.assertTrue((storage.raw_dir / "example" / "one.json").is_file())
@@ -146,6 +147,78 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(second_batch.completed, 1)
             self.assertFalse(second_batch.limit_reached)
             self.assertTrue((storage.raw_dir / "example" / "three.json").exists())
+
+    def test_refresh_refetches_metadata_and_reuses_unchanged_image(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+            client = FakeClient()
+            initial = CrawlPipeline(
+                adapter=adapter,
+                client=client,
+                storage=storage,
+                skip_images=False,
+                force=False,
+            )
+            self.assertEqual(initial.crawl_one("one"), "created")
+            self.assertEqual(client.image_requests, 1)
+
+            refresh_started = utc_now()
+            adapter.title = "Updated at source"
+            refresh = CrawlPipeline(
+                adapter=adapter,
+                client=client,
+                storage=storage,
+                skip_images=False,
+                force=False,
+                refresh_after=refresh_started,
+            )
+            self.assertEqual(refresh.crawl_one("one"), "updated")
+            self.assertEqual(client.image_requests, 1)
+            self.assertTrue(refresh.is_complete("one"))
+
+            record_path = storage.records_dir / "example" / "one-primary.json"
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertEqual(record["title"], "Updated at source")
+            self.assertEqual(record["image"]["status"], "downloaded")
+
+            next_refresh = CrawlPipeline(
+                adapter=adapter,
+                client=client,
+                storage=storage,
+                skip_images=False,
+                force=False,
+                refresh_after=utc_now(),
+            )
+            self.assertEqual(next_refresh.crawl_one("one"), "unchanged")
+            self.assertEqual(client.image_requests, 1)
+
+    def test_forced_refresh_uses_job_time_to_advance_between_batches(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+            client = FakeClient()
+            refresh_started = utc_now()
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=client,
+                storage=storage,
+                skip_images=False,
+                force=True,
+                refresh_after=refresh_started,
+            )
+
+            first = pipeline.crawl_many(["one", "two"], max_new=1)
+            self.assertEqual(first.created, 1)
+            self.assertTrue(first.limit_reached)
+
+            second = pipeline.crawl_many(["one", "two"], max_new=1)
+            self.assertEqual(second.skipped, 1)
+            self.assertEqual(second.created, 1)
+            self.assertFalse(second.limit_reached)
+            self.assertEqual(client.image_requests, 2)
 
 
 if __name__ == "__main__":

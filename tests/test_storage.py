@@ -78,6 +78,51 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(snapshot["parameters"]["department_ids"], [5])
             self.assertEqual(snapshot["discovered_count"], 2)
 
+    def test_refresh_job_resumes_until_marked_complete(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            selector = {"method": "all", "parameters": {"updated_since": "2026-01-01"}}
+
+            path, first, resumed = storage.start_or_resume_refresh("example", selector)
+            self.assertFalse(resumed)
+            same_path, second, resumed = storage.start_or_resume_refresh("example", selector)
+            self.assertTrue(resumed)
+            self.assertEqual(path, same_path)
+            self.assertEqual(first["job_id"], second["job_id"])
+
+            storage.update_refresh_job(path, completed=True, summary={"completed": 2})
+            _, third, resumed = storage.start_or_resume_refresh("example", selector)
+            self.assertFalse(resumed)
+            self.assertNotEqual(first["job_id"], third["job_id"])
+
+    def test_refresh_completion_requires_record_checked_after_job_start(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            record_path = storage.record_path("example", "one")
+            storage.write_json(
+                record_path,
+                {
+                    "source": {"retrieved_at": "2026-01-01T00:00:00Z"},
+                    "image": {"status": "no_image", "local_path": None},
+                },
+            )
+            self.assertFalse(
+                storage.record_is_complete(
+                    record_path,
+                    skip_images=False,
+                    checked_after="2026-02-01T00:00:00Z",
+                )
+            )
+            self.assertTrue(
+                storage.record_is_complete(
+                    record_path,
+                    skip_images=False,
+                    checked_after="2025-12-01T00:00:00Z",
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

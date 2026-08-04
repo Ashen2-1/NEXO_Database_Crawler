@@ -34,11 +34,15 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         "--limit",
         type=positive_int,
         default=100,
-        help="maximum incomplete source objects attempted per run; skips do not count (default: 100)",
+        help="maximum source objects requiring work attempted per run; skips do not count (default: 100)",
     )
     parser.add_argument("--output", type=Path, default=Path("dataset"), help="dataset directory")
     parser.add_argument("--skip-images", action="store_true", help="save metadata without image files")
-    parser.add_argument("--force", action="store_true", help="fetch complete records again")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="start or resume a refresh job and download images again",
+    )
     parser.add_argument("--timeout", type=nonnegative_float, default=30.0, help="request timeout in seconds")
     parser.add_argument("--retries", type=int, default=3, help="temporary failure retry count")
     parser.add_argument(
@@ -121,7 +125,32 @@ def main(argv: list[str] | None = None) -> int:
         f"Discovered {len(discovery.source_ids)} object ID(s); "
         f"snapshot: {storage.relative_path(discovery_path)}"
     )
+    refresh_path = None
+    refresh_state = None
+    refresh_mode = bool(getattr(args, "updated_since", None) or args.force)
+    if refresh_mode:
+        refresh_selector = {
+            "method": discovery.method,
+            "parameters": discovery.parameters,
+            "request_url": discovery.request_url,
+            "force": bool(args.force),
+        }
+        refresh_path, refresh_state, resumed = storage.start_or_resume_refresh(
+            adapter.source_key,
+            refresh_selector,
+        )
+        action = "Resuming" if resumed else "Starting"
+        print(
+            f"{action} refresh job {refresh_state['job_id']}; "
+            f"state: {storage.relative_path(refresh_path)}"
+        )
     if not discovery.source_ids:
+        if refresh_path is not None:
+            storage.update_refresh_job(
+                refresh_path,
+                completed=True,
+                summary={"discovered": 0, "completed": 0, "failed": 0},
+            )
         print(f"No matching {adapter.source_name} object IDs were found.")
         return 0
 
@@ -131,9 +160,10 @@ def main(argv: list[str] | None = None) -> int:
         storage=storage,
         skip_images=args.skip_images,
         force=args.force,
+        refresh_after=refresh_state["started_at"] if refresh_state is not None else None,
     )
     print(
-        f"Processing up to {args.limit} incomplete object(s) "
+        f"Processing up to {args.limit} object(s) requiring work "
         f"from {adapter.source_name} into {output_dir}"
     )
     show_individual_skips = len(discovery.source_ids) <= 100
@@ -151,6 +181,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{index}/{total}] {reference}: already complete")
         elif status == "failed":
             print(f"[{index}/{total}] {reference}: failed: {error}", file=sys.stderr)
+        elif status == "unchanged":
+            print(f"[{index}/{total}] {reference}: checked, unchanged")
+        elif status == "updated":
+            print(f"[{index}/{total}] {reference}: metadata updated")
+        elif status == "created":
+            print(f"[{index}/{total}] {reference}: created")
         else:
             print(f"[{index}/{total}] {reference}: saved")
 
@@ -166,6 +202,30 @@ def main(argv: list[str] | None = None) -> int:
         f"{summary.failed} failed; "
         f"metadata.jsonl contains {metadata_count} record(s)."
     )
+    if summary.completed:
+        print(
+            f"Changes: {summary.created} created, {summary.updated} updated, "
+            f"{summary.unchanged} unchanged."
+        )
+    if refresh_path is not None:
+        refresh_completed = not summary.limit_reached and summary.failed == 0
+        storage.update_refresh_job(
+            refresh_path,
+            completed=refresh_completed,
+            summary={
+                "discovered": summary.discovered,
+                "examined": summary.examined,
+                "attempted": summary.attempted,
+                "completed": summary.completed,
+                "created": summary.created,
+                "updated": summary.updated,
+                "unchanged": summary.unchanged,
+                "skipped": summary.skipped,
+                "failed": summary.failed,
+                "limit_reached": summary.limit_reached,
+            },
+        )
+        print(f"Refresh job status: {'completed' if refresh_completed else 'in progress'}.")
     if summary.limit_reached:
         print("Batch limit reached. Run the same command again to continue with the next incomplete objects.")
     return 1 if summary.failed else 0

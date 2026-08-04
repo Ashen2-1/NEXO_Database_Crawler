@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.parse
@@ -48,6 +49,7 @@ class DatasetStorage:
         self.raw_dir = output_dir / "raw"
         self.records_dir = output_dir / "records"
         self.discovery_dir = output_dir / "discovery"
+        self.state_dir = output_dir / "state"
         self.metadata_path = output_dir / "metadata.jsonl"
         self.manifest_path = output_dir / "crawl_manifest.jsonl"
 
@@ -57,6 +59,7 @@ class DatasetStorage:
         (self.raw_dir / source_key).mkdir(parents=True, exist_ok=True)
         (self.records_dir / source_key).mkdir(parents=True, exist_ok=True)
         (self.discovery_dir / source_key).mkdir(parents=True, exist_ok=True)
+        (self.state_dir / source_key).mkdir(parents=True, exist_ok=True)
 
     def raw_path(self, source_key: str, file_stem: str) -> Path:
         """Return the path for a source object's raw JSON payload."""
@@ -114,7 +117,12 @@ class DatasetStorage:
         timestamp = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
         return timestamp.isoformat().replace("+00:00", "Z")
 
-    def record_is_complete(self, record_path: Path, skip_images: bool) -> bool:
+    def record_is_complete(
+        self,
+        record_path: Path,
+        skip_images: bool,
+        checked_after: str | None = None,
+    ) -> bool:
         """Return whether an existing record satisfies resume/skip criteria."""
         if not record_path.exists():
             return False
@@ -126,6 +134,18 @@ class DatasetStorage:
         image = record.get("image")
         if not isinstance(image, dict):
             return False
+        if checked_after is not None:
+            source = record.get("source")
+            retrieved_at = source.get("retrieved_at") if isinstance(source, dict) else None
+            if not isinstance(retrieved_at, str):
+                return False
+            try:
+                retrieved_time = datetime.fromisoformat(retrieved_at.replace("Z", "+00:00"))
+                required_time = datetime.fromisoformat(checked_after.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if retrieved_time < required_time:
+                return False
         if skip_images:
             return True
         status = image.get("status")
@@ -135,6 +155,49 @@ class DatasetStorage:
         if status == "downloaded" and isinstance(local_path, str):
             return (self.output_dir / local_path).is_file()
         return False
+
+    def start_or_resume_refresh(
+        self,
+        source_key: str,
+        selector: dict[str, Any],
+    ) -> tuple[Path, dict[str, Any], bool]:
+        """Create or resume the unfinished refresh job for a stable discovery selector."""
+        selector_body = json.dumps(selector, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        selector_key = hashlib.sha256(selector_body.encode("utf-8")).hexdigest()[:16]
+        path = self.state_dir / source_key / f"refresh-{selector_key}.json"
+        if path.exists():
+            state = self.read_json(path)
+            if state.get("status") == "in_progress" and state.get("selector") == selector:
+                return path, state, True
+
+        now = datetime.now(timezone.utc)
+        started_at = now.isoformat().replace("+00:00", "Z")
+        state = {
+            "schema_version": "1.0",
+            "job_id": f"{now.strftime('%Y%m%dT%H%M%S.%fZ')}-{selector_key}",
+            "source": source_key,
+            "selector": selector,
+            "started_at": started_at,
+            "status": "in_progress",
+            "last_run_at": None,
+            "last_summary": None,
+        }
+        self.write_json(path, state)
+        return path, state, False
+
+    def update_refresh_job(
+        self,
+        path: Path,
+        *,
+        completed: bool,
+        summary: dict[str, Any],
+    ) -> None:
+        """Record refresh progress; a completed selector starts a new job on its next run."""
+        state = self.read_json(path)
+        state["status"] = "completed" if completed else "in_progress"
+        state["last_run_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        state["last_summary"] = summary
+        self.write_json(path, state)
 
     def rebuild_metadata(self) -> int:
         """Rebuild metadata.jsonl from all record files and return the record count."""

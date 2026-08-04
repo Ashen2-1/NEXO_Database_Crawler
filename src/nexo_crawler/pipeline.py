@@ -24,6 +24,9 @@ class CrawlSummary:
     examined: int
     attempted: int
     completed: int
+    created: int
+    updated: int
+    unchanged: int
     skipped: int
     failed: int
     limit_reached: bool
@@ -41,6 +44,7 @@ class CrawlPipeline:
         storage: DatasetStorage,
         skip_images: bool,
         force: bool,
+        refresh_after: str | None = None,
     ) -> None:
         """Wire up the adapter, HTTP client, storage layer, and crawl flags."""
         self.adapter = adapter
@@ -48,16 +52,21 @@ class CrawlPipeline:
         self.storage = storage
         self.skip_images = skip_images
         self.force = force
+        self.refresh_after = refresh_after
 
     def _record_is_complete(self, source_id: str, candidate: ImageCandidate) -> bool:
         """Return whether the canonical record for this image candidate already exists."""
         identity = self.adapter.identity(source_id, candidate)
         record_path = self.storage.record_path(self.adapter.source_key, identity.file_stem)
-        return self.storage.record_is_complete(record_path, self.skip_images)
+        return self.storage.record_is_complete(
+            record_path,
+            self.skip_images,
+            checked_after=self.refresh_after,
+        )
 
     def is_complete(self, source_id: str) -> bool:
         """Return whether all image records for a cached source object are complete."""
-        if self.force:
+        if self.force and self.refresh_after is None:
             return False
         raw_path = self.storage.raw_path(
             self.adapter.source_key,
@@ -72,6 +81,55 @@ class CrawlPipeline:
             return False
         return bool(candidates) and all(
             self._record_is_complete(source_id, candidate) for candidate in candidates
+        )
+
+    def _reuse_existing_image(
+        self,
+        source_id: str,
+        candidate: ImageCandidate,
+    ) -> ImageInfo | None:
+        """Reuse an unchanged local image while refreshing its surrounding metadata."""
+        if self.force:
+            return None
+        identity = self.adapter.identity(source_id, candidate)
+        record_path = self.storage.record_path(self.adapter.source_key, identity.file_stem)
+        if not record_path.exists():
+            return None
+        try:
+            record = self.storage.read_json(record_path)
+        except (OSError, ValueError):
+            return None
+        image = record.get("image")
+        if not isinstance(image, dict) or image.get("source_url") != candidate.source_url:
+            return None
+
+        status = image.get("status")
+        local_path = image.get("local_path")
+        if status == "downloaded":
+            if not isinstance(local_path, str) or not (self.storage.output_dir / local_path).is_file():
+                return None
+        elif status == "no_image":
+            if candidate.source_url is not None:
+                return None
+        elif status in {"not_public_domain", "not_downloadable"}:
+            if candidate.download_allowed or status != candidate.blocked_status:
+                return None
+        elif status == "skipped":
+            if not self.skip_images:
+                return None
+        else:
+            return None
+
+        return ImageInfo(
+            role=str(image.get("role") or candidate.role),
+            status=str(status),
+            source_url=candidate.source_url,
+            local_path=local_path if isinstance(local_path, str) else None,
+            sha256=image.get("sha256") if isinstance(image.get("sha256"), str) else None,
+            bytes=image.get("bytes") if isinstance(image.get("bytes"), int) else None,
+            content_type=(
+                image.get("content_type") if isinstance(image.get("content_type"), str) else None
+            ),
         )
 
     def _download_image(
@@ -111,34 +169,43 @@ class CrawlPipeline:
         )
 
     def crawl_one(self, source_id: str) -> str:
-        """Fetch, normalize, and persist one source object; return 'skipped' or 'completed'."""
+        """Fetch, normalize, and persist one source object and return its change outcome."""
         raw_path = self.storage.raw_path(
             self.adapter.source_key,
             self.adapter.raw_file_stem(source_id),
         )
         source_api_url = self.adapter.api_url(source_id)
         try:
-            if raw_path.exists() and not self.force:
-                raw = self.storage.read_json(raw_path)
-                retrieved_at = self.storage.raw_file_timestamp(raw_path)
-                candidates = self.adapter.image_candidates(source_id, raw)
-                if candidates and all(
-                    self._record_is_complete(source_id, candidate) for candidate in candidates
-                ):
-                    self.storage.append_manifest(
-                        {
-                            "timestamp": utc_now(),
-                            "source": self.adapter.source_key,
-                            "source_object_id": source_id,
-                            "status": "skipped_existing",
-                        }
-                    )
-                    return "skipped"
-            else:
+            old_raw = self.storage.read_json(raw_path) if raw_path.exists() else None
+            if self.is_complete(source_id):
+                self.storage.append_manifest(
+                    {
+                        "timestamp": utc_now(),
+                        "source": self.adapter.source_key,
+                        "source_object_id": source_id,
+                        "status": "skipped_existing",
+                    }
+                )
+                return "skipped"
+
+            fetched = old_raw is None or self.force or self.refresh_after is not None
+            if fetched:
                 raw = self.adapter.fetch(source_id, self.client)
                 retrieved_at = utc_now()
                 self.storage.write_json(raw_path, raw)
-                candidates = self.adapter.image_candidates(source_id, raw)
+            else:
+                raw = old_raw
+                retrieved_at = self.storage.raw_file_timestamp(raw_path)
+            candidates = self.adapter.image_candidates(source_id, raw)
+
+            if old_raw is None:
+                change_status = "created"
+            elif fetched and old_raw == raw:
+                change_status = "unchanged"
+            elif fetched:
+                change_status = "updated"
+            else:
+                change_status = "completed"
 
             if not candidates:
                 raise ValueError(f"{self.adapter.display_reference(source_id)} produced no image samples")
@@ -147,14 +214,20 @@ class CrawlPipeline:
             for candidate in candidates:
                 identity = self.adapter.identity(source_id, candidate)
                 record_path = self.storage.record_path(self.adapter.source_key, identity.file_stem)
-                if not self.force and self.storage.record_is_complete(record_path, self.skip_images):
+                if (
+                    not self.force
+                    and self.refresh_after is None
+                    and self.storage.record_is_complete(record_path, self.skip_images)
+                ):
                     existing = self.storage.read_json(record_path)
                     existing_image = existing.get("image")
                     if isinstance(existing_image, dict) and isinstance(existing_image.get("status"), str):
                         image_statuses.append(existing_image["status"])
                     continue
 
-                image = self._download_image(source_id, candidate)
+                image = self._reuse_existing_image(source_id, candidate)
+                if image is None:
+                    image = self._download_image(source_id, candidate)
                 context = NormalizationContext(
                     identity=identity,
                     retrieved_at=retrieved_at,
@@ -172,10 +245,11 @@ class CrawlPipeline:
                     "source_object_id": source_id,
                     "source_api_url": source_api_url,
                     "status": "completed",
+                    "change_status": change_status,
                     "image_statuses": image_statuses,
                 }
             )
-            return "completed"
+            return change_status
         except Exception as error:
             self.storage.append_manifest(
                 {
@@ -200,6 +274,9 @@ class CrawlPipeline:
         """Process at most max_new incomplete objects; completed objects do not consume it."""
         ids = list(source_ids)
         completed = 0
+        created = 0
+        updated = 0
+        unchanged = 0
         skipped = 0
         failed = 0
         attempted = 0
@@ -226,6 +303,12 @@ class CrawlPipeline:
                     attempted -= 1
                 else:
                     completed += 1
+                    if result == "created":
+                        created += 1
+                    elif result == "updated":
+                        updated += 1
+                    elif result == "unchanged":
+                        unchanged += 1
                 if on_progress is not None:
                     on_progress(position, len(ids), source_id, result, None)
             except Exception as error:
@@ -238,6 +321,9 @@ class CrawlPipeline:
             examined=examined,
             attempted=attempted,
             completed=completed,
+            created=created,
+            updated=updated,
+            unchanged=unchanged,
             skipped=skipped,
             failed=failed,
             limit_reached=limit_reached,

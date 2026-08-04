@@ -110,6 +110,9 @@ dataset/
 |-- records/
 |   `-- metmuseum/
 |       `-- MET-437329-primary.json
+|-- state/
+|   `-- metmuseum/
+|       `-- refresh-a1b2c3d4e5f6.json
 |-- metadata.jsonl
 `-- crawl_manifest.jsonl
 ```
@@ -121,6 +124,9 @@ primary image only, but the adapter contract supports multiple image candidates 
 Each file in `discovery/` records how IDs were selected, the API URL and filters, the reported
 total, the discovery time, and the complete discovered ID list. This makes a bulk run
 reproducible even if the upstream collection later changes.
+
+`state/` stores resumable refresh-job state for `--updated-since` and `--force`. It is part of
+the dataset's operational state and should be kept with the other output files.
 
 ## Setup and entry points
 
@@ -265,13 +271,31 @@ python crawler.py metmuseum --all --updated-since 2026-08-01 --department-id 11 
 
 `--updated-since` accepts `YYYY-MM-DD` and requires `--all`.
 
+Unlike an ordinary `--all` run, incremental discovery does not skip an ID merely because it was
+ingested before. Every returned ID is fetched once in the current refresh job. The new API JSON
+is compared with the cached JSON and reported as:
+
+- `updated`: source metadata changed;
+- `unchanged`: the object was checked but its API JSON did not change;
+- `created`: the ID did not exist locally.
+
+Run the same incremental command again while the job is in progress to continue with the next
+unchecked IDs. The job start time is stored in `state/`; records retrieved after that time count
+as checked for this job. When the entire discovered list has been checked, the job is marked
+completed. Running the command again after completion starts a new refresh job.
+
+When metadata changes but the primary image URL is unchanged and the local image is complete,
+the existing image file and hash are reused. The image is downloaded again only when it is new,
+missing, no longer matches the source URL, or `--force` was requested.
+
 ## Batch, output, and HTTP options
 
 ### Batch size and automatic continuation
 
-`--limit` is the maximum number of incomplete source objects attempted in the current run.
-Already complete objects are skipped and do not consume the limit. Failed attempts do consume
-it, preventing an error-heavy run from becoming unbounded.
+`--limit` is the maximum number of source objects requiring work that are attempted in the
+current run. In an ordinary crawl, already complete objects are skipped. In a refresh job,
+objects already checked after the job started are skipped. Neither kind of skip consumes the
+limit. Failed attempts do consume it, preventing an error-heavy run from becoming unbounded.
 
 ```powershell
 python crawler.py metmuseum --all --limit 500
@@ -304,15 +328,24 @@ Do not download image binaries:
 python crawler.py metmuseum --query "Anna Atkins" --limit 20 --skip-images
 ```
 
-The raw API payload and canonical metadata are still saved. The image status is `skipped`.
+The raw API payload and canonical metadata are still saved. A new image candidate receives the
+`skipped` status; an already downloaded, unchanged image may retain its existing downloaded
+status and local path during a metadata refresh.
 
 ### Force a refresh
 
-Normally complete records are reused. `--force` fetches and rewrites them, and forced records do
-consume the batch limit:
+Normally complete records are reused. `--force` creates a resumable refresh job, fetches and
+rewrites existing metadata, and downloads the images again. Forced records consume the batch
+limit:
 
 ```powershell
 python crawler.py metmuseum --object-id 437329 --force
+```
+
+For a forced bulk refresh, repeat the same command until the refresh job is completed:
+
+```powershell
+python crawler.py metmuseum --all --department-id 11 --force --limit 500
 ```
 
 ### HTTP controls
@@ -339,10 +372,10 @@ Available common options are:
 
 | Option | Default | Meaning |
 |---|---:|---|
-| `--limit` | `100` | Maximum incomplete objects attempted in this run |
+| `--limit` | `100` | Maximum objects requiring work attempted in this run |
 | `--output` | `dataset` | Dataset output directory |
 | `--skip-images` | off | Save source metadata without image files |
-| `--force` | off | Fetch complete records again |
+| `--force` | off | Refresh metadata and download images again in a resumable job |
 | `--timeout` | `30` | Per-request timeout in seconds |
 | `--retries` | `3` | Retries for temporary HTTP failures |
 | `--request-delay` | `0.25` | Minimum seconds between requests |
@@ -353,13 +386,17 @@ Run `python crawler.py --help` for source selection help, or
 
 ## Resume and rights behavior
 
-Complete records are skipped on later runs. Raw responses cached before an interrupted image
-download are reused, and `metadata.jsonl` is rebuilt from individual record files so it does not
-accumulate duplicate rows.
+Complete records are skipped on later ordinary runs. Raw responses cached before an interrupted
+image download are reused, and `metadata.jsonl` is rebuilt from individual record files so it
+does not accumulate duplicate rows.
 
 Every run performs discovery again and writes a timestamped snapshot. Record completion is
 determined from `raw/`, `records/`, and the expected local image file rather than from an in-memory
 cursor, so rerunning after a crash is safe.
+
+Incremental and forced refreshes additionally use the stable job start time in `state/`. A crash
+may leave the job marked in progress, but records already written with a later `retrieved_at`
+are recognized on the next run and do not consume the next batch.
 
 The Met adapter downloads an image only when the API explicitly returns
 `isPublicDomain: true`. Other metadata is still stored, with the image status set to

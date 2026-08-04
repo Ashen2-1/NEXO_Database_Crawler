@@ -121,7 +121,7 @@ class MetMuseumAdapter(SourceAdapter):
         parser.add_argument(
             "--updated-since",
             type=_iso_date,
-            help="with --all, discover records updated since YYYY-MM-DD",
+            help="with --all, refresh records updated after YYYY-MM-DD",
         )
         parser.add_argument(
             "--include-results-without-images",
