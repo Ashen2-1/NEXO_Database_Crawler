@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import urllib.parse
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from ..models import (
     SourceInfo,
 )
 from .base import (
+    DiscoveryResult,
     ImageCandidate,
     NormalizationContext,
     RecordIdentity,
@@ -52,6 +54,14 @@ def _read_object_ids(path: Path) -> list[str]:
     return object_ids
 
 
+def _iso_date(value: str) -> str:
+    """Validate an ISO calendar date for the Met metadataDate filter."""
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must use YYYY-MM-DD format") from error
+
+
 def _optional_creator(payload: dict[str, Any]) -> list[CreatorInfo] | None:
     """Map Met artist fields to CreatorInfo, or return None if all fields are empty."""
     creator = CreatorInfo(
@@ -85,7 +95,7 @@ class MetMuseumAdapter(SourceAdapter):
 
     @classmethod
     def add_cli_arguments(cls, parser: argparse.ArgumentParser) -> None:
-        """Register Met-specific discovery options (object IDs, file, search query)."""
+        """Register Met-specific direct, search, and bulk discovery options."""
         parser.add_argument(
             "--object-id",
             action="append",
@@ -95,41 +105,112 @@ class MetMuseumAdapter(SourceAdapter):
         )
         parser.add_argument("--ids-file", type=Path, help="UTF-8 file with one Met object ID per line")
         parser.add_argument("--query", help="Met Collection API search query")
-        parser.add_argument("--department-id", type=int, help="optional Met department ID for --query")
+        parser.add_argument(
+            "--all",
+            dest="all_objects",
+            action="store_true",
+            help="discover all Met object IDs; processing is still capped by --limit",
+        )
+        parser.add_argument(
+            "--department-id",
+            action="append",
+            type=int,
+            default=[],
+            help="department filter; repeat for multiple departments in --all mode",
+        )
+        parser.add_argument(
+            "--updated-since",
+            type=_iso_date,
+            help="with --all, discover records updated since YYYY-MM-DD",
+        )
         parser.add_argument(
             "--include-results-without-images",
             action="store_true",
             help="do not filter Met search results to records with images",
         )
 
-    def discover(self, args: argparse.Namespace, client: HttpClient) -> list[str]:
-        """Collect Met object IDs from CLI args, an IDs file, or a Collection API search."""
-        if args.department_id is not None and not args.query:
-            raise ValueError("--department-id requires --query")
-        if args.department_id is not None and args.department_id <= 0:
-            raise ValueError("--department-id must be positive")
-        if not args.object_id and args.ids_file is None and not args.query:
+    def discover(self, args: argparse.Namespace, client: HttpClient) -> DiscoveryResult:
+        """Collect Met IDs from direct inputs, search, or the bulk objects endpoint."""
+        department_ids = args.department_id or []
+        if any(department_id <= 0 for department_id in department_ids):
+            raise ValueError("--department-id values must be positive")
+        has_explicit_ids = bool(args.object_id or args.ids_file is not None)
+        if args.all_objects and (has_explicit_ids or args.query):
+            raise ValueError("--all cannot be combined with --object-id, --ids-file, or --query")
+        if args.updated_since and not args.all_objects:
+            raise ValueError("--updated-since requires --all")
+        if department_ids and not (args.query or args.all_objects):
+            raise ValueError("--department-id requires --query or --all")
+        if args.query and len(department_ids) > 1:
+            raise ValueError("Met search accepts only one --department-id")
+        if args.include_results_without_images and not args.query:
+            raise ValueError("--include-results-without-images requires --query")
+        if not has_explicit_ids and not args.query and not args.all_objects:
             raise ValueError(
-                "provide --object-id, --ids-file, or --query; "
+                "provide --object-id, --ids-file, --query, or --all; "
                 "the crawler never fetches the whole collection implicitly"
+            )
+
+        if args.all_objects:
+            parameters: dict[str, str] = {}
+            if department_ids:
+                parameters["departmentIds"] = "|".join(str(value) for value in department_ids)
+            if args.updated_since:
+                parameters["metadataDate"] = args.updated_since
+            query_string = urllib.parse.urlencode(parameters)
+            url = f"{API_BASE}/objects" + (f"?{query_string}" if query_string else "")
+            response = client.get_json(url)
+            values = response.get("objectIDs") or []
+            if not isinstance(values, list):
+                raise ValueError("Met objects response contained an invalid objectIDs field")
+            source_ids = ordered_unique(
+                str(value) for value in values if isinstance(value, int) and value > 0
+            )
+            total = response.get("total")
+            return DiscoveryResult(
+                source_ids=source_ids,
+                method="all",
+                parameters={
+                    "department_ids": department_ids or None,
+                    "updated_since": args.updated_since,
+                },
+                request_url=url,
+                total_reported=total if isinstance(total, int) else None,
             )
 
         object_ids: list[str] = list(args.object_id)
         if args.ids_file is not None:
             object_ids.extend(_read_object_ids(args.ids_file))
+        request_url: str | None = None
+        total_reported: int | None = None
         if args.query:
             parameters: dict[str, str | int] = {"q": args.query}
             if not args.include_results_without_images:
                 parameters["hasImages"] = "true"
-            if args.department_id is not None:
-                parameters["departmentId"] = args.department_id
-            url = f"{API_BASE}/search?{urllib.parse.urlencode(parameters)}"
-            response = client.get_json(url)
+            if department_ids:
+                parameters["departmentId"] = department_ids[0]
+            request_url = f"{API_BASE}/search?{urllib.parse.urlencode(parameters)}"
+            response = client.get_json(request_url)
             values = response.get("objectIDs") or []
             if not isinstance(values, list):
                 raise ValueError("Met search response contained an invalid objectIDs field")
             object_ids.extend(str(value) for value in values if isinstance(value, int) and value > 0)
-        return ordered_unique(object_ids)
+            total = response.get("total")
+            total_reported = total if isinstance(total, int) else None
+        method = "mixed" if has_explicit_ids and args.query else "query" if args.query else "ids"
+        return DiscoveryResult(
+            source_ids=ordered_unique(object_ids),
+            method=method,
+            parameters={
+                "object_ids": list(args.object_id) or None,
+                "ids_file": str(args.ids_file) if args.ids_file is not None else None,
+                "query": args.query,
+                "department_ids": department_ids or None,
+                "has_images_filter": bool(args.query and not args.include_results_without_images),
+            },
+            request_url=request_url,
+            total_reported=total_reported,
+        )
 
     def fetch(self, source_id: str, client: HttpClient) -> dict[str, Any]:
         """Fetch one object from the Met Collection API and verify the returned ID."""

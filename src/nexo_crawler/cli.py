@@ -34,7 +34,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         "--limit",
         type=positive_int,
         default=100,
-        help="maximum number of unique source objects per run (default: 100)",
+        help="maximum incomplete source objects attempted per run; skips do not count (default: 100)",
     )
     parser.add_argument("--output", type=Path, default=Path("dataset"), help="dataset directory")
     parser.add_argument("--skip-images", action="store_true", help="save metadata without image files")
@@ -96,18 +96,35 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if getattr(args, "query", None):
             print(f"Searching {adapter.source_name} for {args.query!r} ...")
-        source_ids = adapter.discover(args, client)[: args.limit]
+        elif getattr(args, "all_objects", False):
+            print(f"Discovering objects from {adapter.source_name} ...")
+        discovery = adapter.discover(args, client)
     except Exception as error:
         print(f"Could not collect source object IDs: {error}", file=sys.stderr)
         return 1
 
-    if not source_ids:
-        print(f"No matching {adapter.source_name} object IDs were found.")
-        return 0
-
     output_dir = args.output.resolve()
     storage = DatasetStorage(output_dir)
     storage.prepare(adapter.source_key)
+    discovery_path = storage.write_discovery(
+        adapter.source_key,
+        {
+            "method": discovery.method,
+            "parameters": discovery.parameters,
+            "request_url": discovery.request_url,
+            "total_reported": discovery.total_reported,
+            "discovered_count": len(discovery.source_ids),
+            "source_ids": discovery.source_ids,
+        },
+    )
+    print(
+        f"Discovered {len(discovery.source_ids)} object ID(s); "
+        f"snapshot: {storage.relative_path(discovery_path)}"
+    )
+    if not discovery.source_ids:
+        print(f"No matching {adapter.source_name} object IDs were found.")
+        return 0
+
     pipeline = CrawlPipeline(
         adapter=adapter,
         client=client,
@@ -115,28 +132,40 @@ def main(argv: list[str] | None = None) -> int:
         skip_images=args.skip_images,
         force=args.force,
     )
-    print(f"Processing {len(source_ids)} object(s) from {adapter.source_name} into {output_dir}")
+    print(
+        f"Processing up to {args.limit} incomplete object(s) "
+        f"from {adapter.source_name} into {output_dir}"
+    )
+    show_individual_skips = len(discovery.source_ids) <= 100
 
-    completed = 0
-    skipped = 0
-    failed = 0
-    for index, source_id in enumerate(source_ids, 1):
+    def report_progress(
+        index: int,
+        total: int,
+        source_id: str,
+        status: str,
+        error: Exception | None,
+    ) -> None:
         reference = adapter.display_reference(source_id)
-        try:
-            result = pipeline.crawl_one(source_id)
-            if result == "skipped":
-                skipped += 1
-                print(f"[{index}/{len(source_ids)}] {reference}: already complete")
-            else:
-                completed += 1
-                print(f"[{index}/{len(source_ids)}] {reference}: saved")
-        except Exception as error:
-            failed += 1
-            print(f"[{index}/{len(source_ids)}] {reference}: failed: {error}", file=sys.stderr)
+        if status == "skipped":
+            if show_individual_skips:
+                print(f"[{index}/{total}] {reference}: already complete")
+        elif status == "failed":
+            print(f"[{index}/{total}] {reference}: failed: {error}", file=sys.stderr)
+        else:
+            print(f"[{index}/{total}] {reference}: saved")
+
+    summary = pipeline.crawl_many(
+        discovery.source_ids,
+        max_new=args.limit,
+        on_progress=report_progress,
+    )
 
     metadata_count = storage.rebuild_metadata()
     print(
-        f"Done: {completed} completed, {skipped} skipped, {failed} failed; "
+        f"Done: {summary.completed} completed, {summary.skipped} skipped, "
+        f"{summary.failed} failed; "
         f"metadata.jsonl contains {metadata_count} record(s)."
     )
-    return 1 if failed else 0
+    if summary.limit_reached:
+        print("Batch limit reached. Run the same command again to continue with the next incomplete objects.")
+    return 1 if summary.failed else 0

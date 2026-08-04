@@ -47,6 +47,7 @@ class DatasetStorage:
         self.images_dir = output_dir / "images"
         self.raw_dir = output_dir / "raw"
         self.records_dir = output_dir / "records"
+        self.discovery_dir = output_dir / "discovery"
         self.metadata_path = output_dir / "metadata.jsonl"
         self.manifest_path = output_dir / "crawl_manifest.jsonl"
 
@@ -55,6 +56,7 @@ class DatasetStorage:
         (self.images_dir / source_key).mkdir(parents=True, exist_ok=True)
         (self.raw_dir / source_key).mkdir(parents=True, exist_ok=True)
         (self.records_dir / source_key).mkdir(parents=True, exist_ok=True)
+        (self.discovery_dir / source_key).mkdir(parents=True, exist_ok=True)
 
     def raw_path(self, source_key: str, file_stem: str) -> Path:
         """Return the path for a source object's raw JSON payload."""
@@ -90,6 +92,22 @@ class DatasetStorage:
         with self.manifest_path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
             handle.write("\n")
+
+    def write_discovery(self, source_key: str, value: dict[str, Any]) -> Path:
+        """Persist one reproducible discovery snapshot, including the complete ID list."""
+        timestamp = datetime.now(timezone.utc)
+        file_timestamp = timestamp.strftime("%Y%m%dT%H%M%S.%fZ")
+        method = str(value.get("method") or "unknown")
+        safe_method = "".join(character for character in method if character.isalnum() or character in "-_")
+        path = self.discovery_dir / source_key / f"{file_timestamp}-{safe_method}.json"
+        snapshot = {
+            "schema_version": "1.0",
+            "source": source_key,
+            "discovered_at": timestamp.isoformat().replace("+00:00", "Z"),
+            **value,
+        }
+        self.write_json(path, snapshot)
+        return path
 
     def raw_file_timestamp(self, path: Path) -> str:
         """Return the raw file's last-modified time as an ISO 8601 UTC string."""

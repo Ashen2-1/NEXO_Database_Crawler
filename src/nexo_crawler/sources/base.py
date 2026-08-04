@@ -34,6 +34,15 @@ class NormalizationContext:
     image: ImageInfo
 
 
+@dataclass(frozen=True)
+class DiscoveryResult:
+    source_ids: list[str]
+    method: str
+    parameters: dict[str, Any]
+    request_url: str | None = None
+    total_reported: int | None = None
+
+
 def ordered_unique(values: Iterable[str]) -> list[str]:
     """Return values in first-seen order with duplicates removed."""
     seen: set[str] = set()
@@ -55,8 +64,8 @@ class SourceAdapter(ABC):
         """Register source-specific discovery arguments."""
 
     @abstractmethod
-    def discover(self, args: argparse.Namespace, client: HttpClient) -> list[str]:
-        """Return source object identifiers selected by the CLI arguments."""
+    def discover(self, args: argparse.Namespace, client: HttpClient) -> DiscoveryResult:
+        """Return identifiers and provenance for one discovery operation."""
 
     @abstractmethod
     def fetch(self, source_id: str, client: HttpClient) -> dict[str, Any]:

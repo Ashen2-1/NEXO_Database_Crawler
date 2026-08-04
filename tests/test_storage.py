@@ -58,6 +58,26 @@ class StorageTests(unittest.TestCase):
             image_path.write_bytes(b"image")
             self.assertTrue(storage.record_is_complete(record_path, skip_images=False))
 
+    def test_discovery_snapshot_preserves_selector_and_complete_id_list(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            path = storage.write_discovery(
+                "example",
+                {
+                    "method": "all",
+                    "parameters": {"department_ids": [5]},
+                    "request_url": "https://api.example.test/objects?departmentIds=5",
+                    "total_reported": 2,
+                    "discovered_count": 2,
+                    "source_ids": ["one", "two"],
+                },
+            )
+            snapshot = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["source_ids"], ["one", "two"])
+            self.assertEqual(snapshot["parameters"]["department_ids"], [5])
+            self.assertEqual(snapshot["discovered_count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

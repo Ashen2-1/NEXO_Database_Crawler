@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, Iterable
 
 from .http import HttpClient
 from .models import ImageInfo
@@ -15,6 +16,20 @@ from .storage import DatasetStorage, atomic_write_bytes, image_extension
 def utc_now() -> str:
     """Return the current UTC time as an ISO 8601 string with a Z suffix."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+@dataclass(frozen=True)
+class CrawlSummary:
+    discovered: int
+    examined: int
+    attempted: int
+    completed: int
+    skipped: int
+    failed: int
+    limit_reached: bool
+
+
+ProgressCallback = Callable[[int, int, str, str, Exception | None], None]
 
 
 class CrawlPipeline:
@@ -39,6 +54,25 @@ class CrawlPipeline:
         identity = self.adapter.identity(source_id, candidate)
         record_path = self.storage.record_path(self.adapter.source_key, identity.file_stem)
         return self.storage.record_is_complete(record_path, self.skip_images)
+
+    def is_complete(self, source_id: str) -> bool:
+        """Return whether all image records for a cached source object are complete."""
+        if self.force:
+            return False
+        raw_path = self.storage.raw_path(
+            self.adapter.source_key,
+            self.adapter.raw_file_stem(source_id),
+        )
+        if not raw_path.exists():
+            return False
+        try:
+            raw = self.storage.read_json(raw_path)
+            candidates = self.adapter.image_candidates(source_id, raw)
+        except Exception:
+            return False
+        return bool(candidates) and all(
+            self._record_is_complete(source_id, candidate) for candidate in candidates
+        )
 
     def _download_image(
         self,
@@ -155,3 +189,56 @@ class CrawlPipeline:
                 }
             )
             raise
+
+    def crawl_many(
+        self,
+        source_ids: Iterable[str],
+        *,
+        max_new: int,
+        on_progress: ProgressCallback | None = None,
+    ) -> CrawlSummary:
+        """Process at most max_new incomplete objects; completed objects do not consume it."""
+        ids = list(source_ids)
+        completed = 0
+        skipped = 0
+        failed = 0
+        attempted = 0
+        examined = 0
+        limit_reached = False
+
+        for position, source_id in enumerate(ids, 1):
+            examined = position
+            if self.is_complete(source_id):
+                skipped += 1
+                if on_progress is not None:
+                    on_progress(position, len(ids), source_id, "skipped", None)
+                continue
+            if attempted >= max_new:
+                limit_reached = True
+                examined -= 1
+                break
+
+            attempted += 1
+            try:
+                result = self.crawl_one(source_id)
+                if result == "skipped":
+                    skipped += 1
+                    attempted -= 1
+                else:
+                    completed += 1
+                if on_progress is not None:
+                    on_progress(position, len(ids), source_id, result, None)
+            except Exception as error:
+                failed += 1
+                if on_progress is not None:
+                    on_progress(position, len(ids), source_id, "failed", error)
+
+        return CrawlSummary(
+            discovered=len(ids),
+            examined=examined,
+            attempted=attempted,
+            completed=completed,
+            skipped=skipped,
+            failed=failed,
+            limit_reached=limit_reached,
+        )

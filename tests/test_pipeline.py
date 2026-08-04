@@ -8,6 +8,7 @@ from nexo_crawler.http import HttpResponse
 from nexo_crawler.models import CanonicalRecord, SourceInfo
 from nexo_crawler.pipeline import CrawlPipeline
 from nexo_crawler.sources.base import (
+    DiscoveryResult,
     ImageCandidate,
     NormalizationContext,
     RecordIdentity,
@@ -37,7 +38,7 @@ class FakeAdapter(SourceAdapter):
         pass
 
     def discover(self, args, client):
-        return ["one"]
+        return DiscoveryResult(source_ids=["one"], method="ids", parameters={})
 
     def fetch(self, source_id, client):
         self.fetches += 1
@@ -117,6 +118,34 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(pipeline.crawl_one("one"), "skipped")
             self.assertEqual(adapter.fetches, 1)
             self.assertEqual(client.image_requests, 1)
+
+    def test_batch_limit_counts_only_incomplete_objects(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+            client = FakeClient()
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=client,
+                storage=storage,
+                skip_images=False,
+                force=False,
+            )
+            pipeline.crawl_one("one")
+
+            first_batch = pipeline.crawl_many(["one", "two", "three"], max_new=1)
+            self.assertEqual(first_batch.skipped, 1)
+            self.assertEqual(first_batch.completed, 1)
+            self.assertEqual(first_batch.attempted, 1)
+            self.assertTrue(first_batch.limit_reached)
+            self.assertFalse((storage.raw_dir / "example" / "three.json").exists())
+
+            second_batch = pipeline.crawl_many(["one", "two", "three"], max_new=1)
+            self.assertEqual(second_batch.skipped, 2)
+            self.assertEqual(second_batch.completed, 1)
+            self.assertFalse(second_batch.limit_reached)
+            self.assertTrue((storage.raw_dir / "example" / "three.json").exists())
 
 
 if __name__ == "__main__":

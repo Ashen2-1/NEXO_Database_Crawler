@@ -25,7 +25,9 @@ class MetMuseumAdapterTests(unittest.TestCase):
             "object_id": [],
             "ids_file": None,
             "query": None,
-            "department_id": None,
+            "all_objects": False,
+            "department_id": [],
+            "updated_since": None,
             "include_results_without_images": False,
         }
         values.update(overrides)
@@ -34,10 +36,11 @@ class MetMuseumAdapterTests(unittest.TestCase):
     def test_search_adds_image_filter_and_department(self):
         client = FakeJsonClient({"objectIDs": [4, 7]})
         result = self.adapter.discover(
-            self.arguments(query="blue vase", department_id=5),
+            self.arguments(query="blue vase", department_id=[5]),
             client,
         )
-        self.assertEqual(result, ["4", "7"])
+        self.assertEqual(result.source_ids, ["4", "7"])
+        self.assertEqual(result.method, "query")
         self.assertIn("hasImages=true", client.url)
         self.assertIn("departmentId=5", client.url)
 
@@ -48,6 +51,36 @@ class MetMuseumAdapterTests(unittest.TestCase):
             client,
         )
         self.assertNotIn("hasImages", client.url)
+
+    def test_all_discovers_inventory_with_department_and_update_filters(self):
+        client = FakeJsonClient({"total": 2, "objectIDs": [8, 9]})
+        result = self.adapter.discover(
+            self.arguments(
+                all_objects=True,
+                department_id=[5, 11],
+                updated_since="2026-01-01",
+            ),
+            client,
+        )
+        self.assertEqual(result.source_ids, ["8", "9"])
+        self.assertEqual(result.total_reported, 2)
+        self.assertEqual(result.method, "all")
+        self.assertIn("departmentIds=5%7C11", client.url)
+        self.assertIn("metadataDate=2026-01-01", client.url)
+
+    def test_all_cannot_be_combined_with_query(self):
+        with self.assertRaisesRegex(ValueError, "--all cannot be combined"):
+            self.adapter.discover(
+                self.arguments(all_objects=True, query="vase"),
+                FakeJsonClient({}),
+            )
+
+    def test_updated_since_requires_all(self):
+        with self.assertRaisesRegex(ValueError, "--updated-since requires --all"):
+            self.adapter.discover(
+                self.arguments(query="vase", updated_since="2026-01-01"),
+                FakeJsonClient({}),
+            )
 
     def test_met_fields_map_to_canonical_schema_without_description(self):
         raw = {
