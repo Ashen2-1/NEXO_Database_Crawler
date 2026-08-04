@@ -13,6 +13,7 @@ from .storage import DatasetStorage
 
 
 def positive_int(value: str) -> int:
+    """Parse a string as an integer and reject non-positive values for argparse."""
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be a positive integer")
@@ -20,6 +21,7 @@ def positive_int(value: str) -> int:
 
 
 def nonnegative_float(value: str) -> float:
+    """Parse a string as a float and reject negative values for argparse."""
     parsed = float(value)
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be zero or greater")
@@ -27,6 +29,7 @@ def nonnegative_float(value: str) -> float:
 
 
 def add_common_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register shared crawl options (limits, output path, HTTP settings) on a subparser."""
     parser.add_argument(
         "--limit",
         type=positive_int,
@@ -48,6 +51,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the root parser with one subcommand per registered source adapter."""
     parser = argparse.ArgumentParser(
         description="Build a source-grounded image dataset without AI-generated annotations."
     )
@@ -73,6 +77,7 @@ def _with_legacy_default_source(argv: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse CLI args, discover source IDs, crawl each object, and write the dataset."""
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(_with_legacy_default_source(raw_argv))

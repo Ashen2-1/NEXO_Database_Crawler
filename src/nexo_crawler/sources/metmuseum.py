@@ -28,6 +28,7 @@ API_BASE = "https://collectionapi.metmuseum.org/public/collection/v1"
 
 
 def _positive_object_id(value: str) -> str:
+    """Parse and validate a positive numeric Met object ID for argparse."""
     try:
         parsed = int(value)
     except ValueError as error:
@@ -38,6 +39,7 @@ def _positive_object_id(value: str) -> str:
 
 
 def _read_object_ids(path: Path) -> list[str]:
+    """Read Met object IDs from a UTF-8 file, ignoring blank lines and comments."""
     object_ids: list[str] = []
     for line_number, raw_line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
         line = raw_line.strip()
@@ -51,6 +53,7 @@ def _read_object_ids(path: Path) -> list[str]:
 
 
 def _optional_creator(payload: dict[str, Any]) -> list[CreatorInfo] | None:
+    """Map Met artist fields to CreatorInfo, or return None if all fields are empty."""
     creator = CreatorInfo(
         name=payload.get("artistDisplayName") or None,
         role=payload.get("artistRole") or None,
@@ -67,6 +70,7 @@ def _optional_creator(payload: dict[str, Any]) -> list[CreatorInfo] | None:
 
 
 def _optional_tags(payload: dict[str, Any]) -> list[str] | None:
+    """Extract tag terms from the Met tags array, or return None if absent."""
     raw_tags = payload.get("tags")
     if raw_tags is None:
         return None
@@ -81,6 +85,7 @@ class MetMuseumAdapter(SourceAdapter):
 
     @classmethod
     def add_cli_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        """Register Met-specific discovery options (object IDs, file, search query)."""
         parser.add_argument(
             "--object-id",
             action="append",
@@ -98,6 +103,7 @@ class MetMuseumAdapter(SourceAdapter):
         )
 
     def discover(self, args: argparse.Namespace, client: HttpClient) -> list[str]:
+        """Collect Met object IDs from CLI args, an IDs file, or a Collection API search."""
         if args.department_id is not None and not args.query:
             raise ValueError("--department-id requires --query")
         if args.department_id is not None and args.department_id <= 0:
@@ -126,6 +132,7 @@ class MetMuseumAdapter(SourceAdapter):
         return ordered_unique(object_ids)
 
     def fetch(self, source_id: str, client: HttpClient) -> dict[str, Any]:
+        """Fetch one object from the Met Collection API and verify the returned ID."""
         payload = client.get_json(self.api_url(source_id))
         if str(payload.get("objectID")) != source_id:
             raise ValueError(
@@ -134,9 +141,11 @@ class MetMuseumAdapter(SourceAdapter):
         return payload
 
     def raw_file_stem(self, source_id: str) -> str:
+        """Return the filesystem stem for a Met object's raw JSON file."""
         return f"MET-{source_id}"
 
     def image_candidates(self, source_id: str, raw: dict[str, Any]) -> list[ImageCandidate]:
+        """Return the primary image candidate, gated on Met public-domain status."""
         return [
             ImageCandidate(
                 key="primary",
@@ -148,6 +157,7 @@ class MetMuseumAdapter(SourceAdapter):
         ]
 
     def identity(self, source_id: str, image: ImageCandidate) -> RecordIdentity:
+        """Return stable record and file identifiers for a Met image sample."""
         return RecordIdentity(
             record_id=f"metmuseum:{source_id}:{image.key}",
             file_stem=f"MET-{source_id}-{image.key}",
@@ -159,6 +169,7 @@ class MetMuseumAdapter(SourceAdapter):
         raw: dict[str, Any],
         context: NormalizationContext,
     ) -> CanonicalRecord:
+        """Map Met API fields to the canonical schema without inference."""
         record = CanonicalRecord(
             record_id=context.identity.record_id,
             source=SourceInfo(
@@ -219,10 +230,13 @@ class MetMuseumAdapter(SourceAdapter):
         return record
 
     def api_url(self, source_id: str) -> str:
+        """Return the Met Collection API object endpoint for the given ID."""
         return f"{API_BASE}/objects/{source_id}"
 
     def page_url(self, source_id: str, raw: dict[str, Any]) -> str | None:
+        """Return the Met museum web page URL from the API payload."""
         return raw.get("objectURL") or None
 
     def display_reference(self, source_id: str) -> str:
+        """Return a Met-prefixed label for progress output."""
         return f"MET-{source_id}"

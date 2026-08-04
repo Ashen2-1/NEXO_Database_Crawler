@@ -97,6 +97,7 @@ class CanonicalRecord:
     schema_version: str = SCHEMA_VERSION
 
     def validate(self) -> None:
+        """Raise ValueError if required fields or downloaded-image metadata are invalid."""
         if self.schema_version != SCHEMA_VERSION:
             raise ValueError(f"unsupported schema version: {self.schema_version}")
         if not self.record_id:
@@ -112,5 +113,6 @@ class CanonicalRecord:
                 raise ValueError("a downloaded image requires path, hash, and byte count")
 
     def to_dict(self) -> dict[str, Any]:
+        """Validate the record and return a JSON-serializable dictionary."""
         self.validate()
         return asdict(self)

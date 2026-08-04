@@ -30,6 +30,7 @@ class HttpClient:
         request_delay: float,
         user_agent: str,
     ) -> None:
+        """Configure request timeout, retry policy, throttling, and User-Agent."""
         self.timeout = timeout
         self.retries = retries
         self.request_delay = request_delay
@@ -37,6 +38,7 @@ class HttpClient:
         self._last_request_started: float | None = None
 
     def _throttle(self) -> None:
+        """Sleep until the minimum delay since the last request has elapsed."""
         if self._last_request_started is not None:
             elapsed = time.monotonic() - self._last_request_started
             if elapsed < self.request_delay:
@@ -44,6 +46,7 @@ class HttpClient:
         self._last_request_started = time.monotonic()
 
     def get(self, url: str) -> HttpResponse:
+        """Fetch a URL with throttling and retries for transient HTTP/network errors."""
         last_error: Exception | None = None
         for attempt in range(self.retries + 1):
             self._throttle()
@@ -76,6 +79,7 @@ class HttpClient:
         raise RuntimeError(f"request failed: {last_error}")
 
     def get_json(self, url: str) -> dict[str, Any]:
+        """Fetch a URL and parse the response body as a JSON object."""
         response = self.get(url)
         try:
             value = json.loads(response.data.decode("utf-8"))

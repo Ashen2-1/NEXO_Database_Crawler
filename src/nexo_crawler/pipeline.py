@@ -13,6 +13,7 @@ from .storage import DatasetStorage, atomic_write_bytes, image_extension
 
 
 def utc_now() -> str:
+    """Return the current UTC time as an ISO 8601 string with a Z suffix."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -26,6 +27,7 @@ class CrawlPipeline:
         skip_images: bool,
         force: bool,
     ) -> None:
+        """Wire up the adapter, HTTP client, storage layer, and crawl flags."""
         self.adapter = adapter
         self.client = client
         self.storage = storage
@@ -33,6 +35,7 @@ class CrawlPipeline:
         self.force = force
 
     def _record_is_complete(self, source_id: str, candidate: ImageCandidate) -> bool:
+        """Return whether the canonical record for this image candidate already exists."""
         identity = self.adapter.identity(source_id, candidate)
         record_path = self.storage.record_path(self.adapter.source_key, identity.file_stem)
         return self.storage.record_is_complete(record_path, self.skip_images)
@@ -42,6 +45,7 @@ class CrawlPipeline:
         source_id: str,
         candidate: ImageCandidate,
     ) -> ImageInfo:
+        """Download or skip an image candidate and return its ImageInfo status."""
         if not candidate.source_url:
             return ImageInfo(role=candidate.role, status="no_image", source_url=None)
         if not candidate.download_allowed:
@@ -73,6 +77,7 @@ class CrawlPipeline:
         )
 
     def crawl_one(self, source_id: str) -> str:
+        """Fetch, normalize, and persist one source object; return 'skipped' or 'completed'."""
         raw_path = self.storage.raw_path(
             self.adapter.source_key,
             self.adapter.raw_file_stem(source_id),

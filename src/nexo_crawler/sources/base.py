@@ -35,6 +35,7 @@ class NormalizationContext:
 
 
 def ordered_unique(values: Iterable[str]) -> list[str]:
+    """Return values in first-seen order with duplicates removed."""
     seen: set[str] = set()
     result: list[str] = []
     for value in values:
@@ -91,4 +92,5 @@ class SourceAdapter(ABC):
         """Return the human-readable source page, when one exists."""
 
     def display_reference(self, source_id: str) -> str:
+        """Return a short label for progress output (default: source_key:source_id)."""
         return f"{self.source_key}:{source_id}"
