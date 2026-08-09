@@ -17,7 +17,7 @@ src/
     |-- http.py                    rate limiting, retries, JSON and binary requests
     |-- models.py                  canonical schema 2.0
     |-- pipeline.py                source-independent crawl orchestration
-    |-- storage.py                 files, JSONL, manifest, resume checks
+    |-- storage.py                 files, JSONL/CSV exports, manifest, resume checks
     `-- sources/
         |-- base.py                SourceAdapter contract
         `-- metmuseum.py           Met discovery, API fetch, and field mapping
@@ -94,6 +94,18 @@ known empty lists are `[]`. Empty strings are not used as substitutes for missin
 The complete unmodified source response is also retained in `raw/`, so no source data needs to
 be invented to fill a common field.
 
+Every completed run also rebuilds `metadata.csv` for training tools that prefer tabular input.
+It contains the same records in the same `record_id` order. Nested scalar fields use names such
+as `source_object_id`, `image_status`, and `rights_public_domain`; the training image column is
+named `image` and contains the dataset-relative local image path. Missing values are empty cells.
+The `creators`, `tags`, and `source_metadata` cells contain compact JSON because those values can
+contain lists or objects and cannot be represented losslessly as ordinary scalar CSV columns.
+
+CSV quoting is handled automatically, including commas, quotation marks, Unicode text, and
+newlines inside descriptions. Training code should normally keep rows where
+`image_status == "downloaded"`; rows without downloadable images remain in both metadata exports
+so the source crawl stays complete and auditable.
+
 ## Output layout
 
 ```text
@@ -114,6 +126,7 @@ dataset/
 |   `-- metmuseum/
 |       `-- refresh-a1b2c3d4e5f6.json
 |-- metadata.jsonl
+|-- metadata.csv
 `-- crawl_manifest.jsonl
 ```
 
@@ -387,8 +400,8 @@ Run `python crawler.py --help` for source selection help, or
 ## Resume and rights behavior
 
 Complete records are skipped on later ordinary runs. Raw responses cached before an interrupted
-image download are reused, and `metadata.jsonl` is rebuilt from individual record files so it
-does not accumulate duplicate rows.
+image download are reused, and `metadata.jsonl` plus `metadata.csv` are rebuilt from individual
+record files so they do not accumulate duplicate rows.
 
 Every run performs discovery again and writes a timestamped snapshot. Record completion is
 determined from `raw/`, `records/`, and the expected local image file rather than from an in-memory

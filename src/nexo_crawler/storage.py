@@ -1,14 +1,134 @@
-"""Dataset layout, atomic writes, resume checks, and JSONL assembly."""
+"""Dataset layout, atomic writes, resume checks, and metadata assembly."""
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import os
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+CSV_COLUMNS = [
+    "record_id",
+    "image",
+    "description",
+    "title",
+    "object_type",
+    "category",
+    "creators",
+    "creation_date",
+    "creation_start_year",
+    "creation_end_year",
+    "material",
+    "dimensions",
+    "culture",
+    "period",
+    "country",
+    "brand",
+    "model",
+    "catalog_number",
+    "department",
+    "tags",
+    "source_key",
+    "source_name",
+    "source_object_id",
+    "source_api_url",
+    "source_page_url",
+    "source_retrieved_at",
+    "source_raw_path",
+    "image_role",
+    "image_status",
+    "image_source_url",
+    "image_sha256",
+    "image_bytes",
+    "image_content_type",
+    "rights_public_domain",
+    "rights_text",
+    "rights_credit_line",
+    "annotation_status",
+    "annotation_method",
+    "annotation_reviewed",
+    "annotation_note",
+    "source_metadata",
+    "crawler_version",
+    "schema_version",
+]
+
+
+def _nested(value: dict[str, Any], *keys: str) -> Any:
+    """Return a nested dictionary value, or None when any level is absent."""
+    current: Any = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _csv_value(value: Any) -> str | int | float:
+    """Convert canonical values to stable, lossless CSV cell values."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return value
+
+
+def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
+    """Flatten one canonical record into the documented training-friendly CSV schema."""
+    values: dict[str, Any] = {
+        "record_id": record.get("record_id"),
+        "image": _nested(record, "image", "local_path"),
+        "description": record.get("description"),
+        "title": record.get("title"),
+        "object_type": record.get("object_type"),
+        "category": record.get("category"),
+        "creators": record.get("creators"),
+        "creation_date": _nested(record, "creation_date", "display"),
+        "creation_start_year": _nested(record, "creation_date", "start_year"),
+        "creation_end_year": _nested(record, "creation_date", "end_year"),
+        "material": record.get("material"),
+        "dimensions": record.get("dimensions"),
+        "culture": record.get("culture"),
+        "period": record.get("period"),
+        "country": record.get("country"),
+        "brand": record.get("brand"),
+        "model": record.get("model"),
+        "catalog_number": record.get("catalog_number"),
+        "department": record.get("department"),
+        "tags": record.get("tags"),
+        "source_key": _nested(record, "source", "key"),
+        "source_name": _nested(record, "source", "name"),
+        "source_object_id": _nested(record, "source", "object_id"),
+        "source_api_url": _nested(record, "source", "api_url"),
+        "source_page_url": _nested(record, "source", "page_url"),
+        "source_retrieved_at": _nested(record, "source", "retrieved_at"),
+        "source_raw_path": _nested(record, "source", "raw_path"),
+        "image_role": _nested(record, "image", "role"),
+        "image_status": _nested(record, "image", "status"),
+        "image_source_url": _nested(record, "image", "source_url"),
+        "image_sha256": _nested(record, "image", "sha256"),
+        "image_bytes": _nested(record, "image", "bytes"),
+        "image_content_type": _nested(record, "image", "content_type"),
+        "rights_public_domain": _nested(record, "rights", "public_domain"),
+        "rights_text": _nested(record, "rights", "rights_text"),
+        "rights_credit_line": _nested(record, "rights", "credit_line"),
+        "annotation_status": _nested(record, "annotation", "status"),
+        "annotation_method": _nested(record, "annotation", "method"),
+        "annotation_reviewed": _nested(record, "annotation", "reviewed"),
+        "annotation_note": _nested(record, "annotation", "note"),
+        "source_metadata": record.get("source_metadata"),
+        "crawler_version": record.get("crawler_version"),
+        "schema_version": record.get("schema_version"),
+    }
+    return {column: _csv_value(values[column]) for column in CSV_COLUMNS}
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -51,6 +171,7 @@ class DatasetStorage:
         self.discovery_dir = output_dir / "discovery"
         self.state_dir = output_dir / "state"
         self.metadata_path = output_dir / "metadata.jsonl"
+        self.metadata_csv_path = output_dir / "metadata.csv"
         self.manifest_path = output_dir / "crawl_manifest.jsonl"
 
     def prepare(self, source_key: str) -> None:
@@ -200,7 +321,7 @@ class DatasetStorage:
         self.write_json(path, state)
 
     def rebuild_metadata(self) -> int:
-        """Rebuild metadata.jsonl from all record files and return the record count."""
+        """Rebuild metadata.jsonl and metadata.csv, returning the record count."""
         records: list[dict[str, Any]] = []
         source_directories = (
             [path for path in self.records_dir.iterdir() if path.is_dir()]
@@ -220,4 +341,10 @@ class DatasetStorage:
             for record in records
         )
         atomic_write_bytes(self.metadata_path, body.encode("utf-8"))
+
+        csv_body = io.StringIO(newline="")
+        writer = csv.DictWriter(csv_body, fieldnames=CSV_COLUMNS, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(record_to_csv_row(record) for record in records)
+        atomic_write_bytes(self.metadata_csv_path, csv_body.getvalue().encode("utf-8"))
         return len(records)

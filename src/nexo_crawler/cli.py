@@ -200,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Done: {summary.completed} completed, {summary.skipped} skipped, "
         f"{summary.failed} failed; "
-        f"metadata.jsonl contains {metadata_count} record(s)."
+        f"metadata.jsonl and metadata.csv contain {metadata_count} record(s)."
     )
     if summary.completed:
         print(

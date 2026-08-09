@@ -1,3 +1,4 @@
+import csv
 import json
 import tempfile
 import unittest
@@ -38,6 +39,61 @@ class StorageTests(unittest.TestCase):
                 [row["record_id"] for row in rows],
                 ["source-a:1:primary", "source-b:2:primary"],
             )
+            with storage.metadata_csv_path.open(encoding="utf-8", newline="") as handle:
+                csv_rows = list(csv.DictReader(handle))
+            self.assertEqual(
+                [row["record_id"] for row in csv_rows],
+                ["source-a:1:primary", "source-b:2:primary"],
+            )
+
+    def test_rebuild_metadata_flattens_csv_and_preserves_nested_values(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            storage.write_json(
+                storage.record_path("example", "one"),
+                {
+                    "record_id": "example:1:primary",
+                    "source": {
+                        "key": "example",
+                        "name": "Example Museum",
+                        "object_id": "1",
+                        "page_url": "https://example.test/object/1",
+                    },
+                    "image": {
+                        "role": "primary",
+                        "status": "downloaded",
+                        "local_path": "images/example/one.jpg",
+                        "bytes": 123,
+                    },
+                    "title": "Portrait, with comma",
+                    "description": "First line\nSecond line",
+                    "creators": [{"name": "Example Artist", "role": "Artist"}],
+                    "creation_date": {"display": "1900", "start_year": 1900},
+                    "tags": ["portrait", "photograph"],
+                    "rights": {"public_domain": True},
+                    "annotation": {"reviewed": False},
+                    "source_metadata": {"locale": None},
+                    "schema_version": "2.0",
+                },
+            )
+
+            self.assertEqual(storage.rebuild_metadata(), 1)
+            with storage.metadata_csv_path.open(encoding="utf-8", newline="") as handle:
+                row = next(csv.DictReader(handle))
+
+            self.assertEqual(row["image"], "images/example/one.jpg")
+            self.assertEqual(row["title"], "Portrait, with comma")
+            self.assertEqual(row["description"], "First line\nSecond line")
+            self.assertEqual(row["creation_start_year"], "1900")
+            self.assertEqual(row["rights_public_domain"], "true")
+            self.assertEqual(row["annotation_reviewed"], "false")
+            self.assertEqual(
+                json.loads(row["creators"]),
+                [{"name": "Example Artist", "role": "Artist"}],
+            )
+            self.assertEqual(json.loads(row["tags"]), ["portrait", "photograph"])
+            self.assertEqual(json.loads(row["source_metadata"]), {"locale": None})
 
     def test_resume_check_requires_downloaded_image_file(self):
         with self.temporary_directory() as temporary_directory:
