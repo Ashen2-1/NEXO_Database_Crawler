@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .models import SCHEMA_VERSION
+
 
 CSV_COLUMNS = [
     "record_id",
@@ -20,20 +22,55 @@ CSV_COLUMNS = [
     "title",
     "object_type",
     "category",
+    "classification",
     "creators",
+    "creator_name",
+    "creator_role",
+    "creator_attribution",
+    "creator_suffix",
+    "creator_sort_name",
+    "creator_biography",
+    "creator_nationality",
+    "creator_birth_year",
+    "creator_death_year",
+    "creator_gender",
+    "creator_ulan_url",
+    "creator_wikidata_url",
     "creation_date",
     "creation_start_year",
     "creation_end_year",
     "material",
     "dimensions",
+    "measurements",
     "culture",
     "period",
+    "dynasty",
+    "reign",
+    "portfolio",
     "country",
+    "region",
+    "subregion",
+    "locale",
+    "city",
+    "state",
+    "county",
+    "geography_type",
+    "locus",
+    "excavation",
+    "river",
     "brand",
     "model",
     "catalog_number",
+    "accession_year",
     "department",
+    "repository",
+    "gallery_number",
     "tags",
+    "tag_details",
+    "object_wikidata_url",
+    "link_resource",
+    "is_highlight",
+    "is_timeline_work",
     "source_key",
     "source_name",
     "source_object_id",
@@ -47,6 +84,8 @@ CSV_COLUMNS = [
     "image_sha256",
     "image_bytes",
     "image_content_type",
+    "primary_image_small_url",
+    "additional_image_urls",
     "rights_public_domain",
     "rights_text",
     "rights_credit_line",
@@ -54,6 +93,8 @@ CSV_COLUMNS = [
     "annotation_method",
     "annotation_reviewed",
     "annotation_note",
+    "constituents",
+    "metadata_date",
     "source_metadata",
     "crawler_version",
     "schema_version",
@@ -81,6 +122,20 @@ def _csv_value(value: Any) -> str | int | float:
     return value
 
 
+def _record_or_source_metadata(record: dict[str, Any], key: str) -> Any:
+    """Read a promoted canonical field, falling back to legacy source_metadata."""
+    value = record.get(key)
+    return value if value is not None else _nested(record, "source_metadata", key)
+
+
+def _first_creator(record: dict[str, Any], key: str) -> Any:
+    """Return a convenience scalar from the first creator while retaining creators JSON."""
+    creators = record.get("creators")
+    if not isinstance(creators, list) or not creators or not isinstance(creators[0], dict):
+        return None
+    return creators[0].get(key)
+
+
 def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
     """Flatten one canonical record into the documented training-friendly CSV schema."""
     values: dict[str, Any] = {
@@ -90,20 +145,55 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "title": record.get("title"),
         "object_type": record.get("object_type"),
         "category": record.get("category"),
+        "classification": record.get("classification") or record.get("category"),
         "creators": record.get("creators"),
+        "creator_name": _first_creator(record, "name"),
+        "creator_role": _first_creator(record, "role"),
+        "creator_attribution": _first_creator(record, "attribution"),
+        "creator_suffix": _first_creator(record, "suffix"),
+        "creator_sort_name": _first_creator(record, "sort_name"),
+        "creator_biography": _first_creator(record, "biography"),
+        "creator_nationality": _first_creator(record, "nationality"),
+        "creator_birth_year": _first_creator(record, "birth_year"),
+        "creator_death_year": _first_creator(record, "death_year"),
+        "creator_gender": _first_creator(record, "gender"),
+        "creator_ulan_url": _first_creator(record, "ulan_url"),
+        "creator_wikidata_url": _first_creator(record, "wikidata_url"),
         "creation_date": _nested(record, "creation_date", "display"),
         "creation_start_year": _nested(record, "creation_date", "start_year"),
         "creation_end_year": _nested(record, "creation_date", "end_year"),
         "material": record.get("material"),
         "dimensions": record.get("dimensions"),
+        "measurements": _nested(record, "source_metadata", "measurements"),
         "culture": record.get("culture"),
         "period": record.get("period"),
+        "dynasty": _record_or_source_metadata(record, "dynasty"),
+        "reign": _record_or_source_metadata(record, "reign"),
+        "portfolio": _record_or_source_metadata(record, "portfolio"),
         "country": record.get("country"),
+        "region": _record_or_source_metadata(record, "region"),
+        "subregion": _record_or_source_metadata(record, "subregion"),
+        "locale": _record_or_source_metadata(record, "locale"),
+        "city": _record_or_source_metadata(record, "city"),
+        "state": _record_or_source_metadata(record, "state"),
+        "county": _record_or_source_metadata(record, "county"),
+        "geography_type": _record_or_source_metadata(record, "geography_type"),
+        "locus": _record_or_source_metadata(record, "locus"),
+        "excavation": _record_or_source_metadata(record, "excavation"),
+        "river": _record_or_source_metadata(record, "river"),
         "brand": record.get("brand"),
         "model": record.get("model"),
         "catalog_number": record.get("catalog_number"),
+        "accession_year": _record_or_source_metadata(record, "accession_year"),
         "department": record.get("department"),
+        "repository": _record_or_source_metadata(record, "repository"),
+        "gallery_number": _record_or_source_metadata(record, "gallery_number"),
         "tags": record.get("tags"),
+        "tag_details": _nested(record, "source_metadata", "tag_details"),
+        "object_wikidata_url": _record_or_source_metadata(record, "object_wikidata_url"),
+        "link_resource": _record_or_source_metadata(record, "link_resource"),
+        "is_highlight": _record_or_source_metadata(record, "is_highlight"),
+        "is_timeline_work": _record_or_source_metadata(record, "is_timeline_work"),
         "source_key": _nested(record, "source", "key"),
         "source_name": _nested(record, "source", "name"),
         "source_object_id": _nested(record, "source", "object_id"),
@@ -117,6 +207,8 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "image_sha256": _nested(record, "image", "sha256"),
         "image_bytes": _nested(record, "image", "bytes"),
         "image_content_type": _nested(record, "image", "content_type"),
+        "primary_image_small_url": _nested(record, "source_metadata", "primary_image_small_url"),
+        "additional_image_urls": _nested(record, "source_metadata", "additional_image_urls"),
         "rights_public_domain": _nested(record, "rights", "public_domain"),
         "rights_text": _nested(record, "rights", "rights_text"),
         "rights_credit_line": _nested(record, "rights", "credit_line"),
@@ -124,6 +216,8 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "annotation_method": _nested(record, "annotation", "method"),
         "annotation_reviewed": _nested(record, "annotation", "reviewed"),
         "annotation_note": _nested(record, "annotation", "note"),
+        "constituents": _nested(record, "source_metadata", "constituents"),
+        "metadata_date": _nested(record, "source_metadata", "metadata_date"),
         "source_metadata": record.get("source_metadata"),
         "crawler_version": record.get("crawler_version"),
         "schema_version": record.get("schema_version"),
@@ -250,6 +344,9 @@ class DatasetStorage:
         try:
             record = self.read_json(record_path)
         except (OSError, ValueError, json.JSONDecodeError):
+            return False
+
+        if record.get("schema_version") != SCHEMA_VERSION:
             return False
 
         image = record.get("image")

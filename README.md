@@ -15,7 +15,7 @@ src/
 `-- nexo_crawler/
     |-- cli.py                     source selection and shared CLI options
     |-- http.py                    rate limiting, retries, JSON and binary requests
-    |-- models.py                  canonical schema 2.0
+    |-- models.py                  canonical schema 2.1
     |-- pipeline.py                source-independent crawl orchestration
     |-- storage.py                 files, JSONL/CSV exports, manifest, resume checks
     `-- sources/
@@ -34,7 +34,7 @@ known empty lists are `[]`. Empty strings are not used as substitutes for missin
 
 ```json
 {
-  "schema_version": "2.0",
+  "schema_version": "2.1",
   "record_id": "metmuseum:437329:primary",
   "source": {
     "key": "metmuseum",
@@ -58,6 +58,7 @@ known empty lists are `[]`. Empty strings are not used as substitutes for missin
   "description": null,
   "object_type": "Painting",
   "category": "Paintings",
+  "classification": "Paintings",
   "creators": [{"name": "Nicolas Poussin", "role": "Artist"}],
   "creation_date": {
     "display": "probably 1633-34",
@@ -68,11 +69,31 @@ known empty lists are `[]`. Empty strings are not used as substitutes for missin
   "dimensions": "...",
   "culture": null,
   "period": null,
+  "dynasty": null,
+  "reign": null,
+  "portfolio": null,
   "country": null,
+  "region": null,
+  "subregion": null,
+  "locale": null,
+  "city": null,
+  "state": null,
+  "county": null,
+  "geography_type": null,
+  "locus": null,
+  "excavation": null,
+  "river": null,
   "brand": null,
   "model": null,
   "catalog_number": "46.160",
+  "accession_year": "1946",
   "department": "European Paintings",
+  "repository": "Metropolitan Museum of Art, New York, NY",
+  "object_wikidata_url": null,
+  "gallery_number": "617",
+  "is_highlight": false,
+  "is_timeline_work": false,
+  "link_resource": null,
   "tags": null,
   "rights": {
     "public_domain": true,
@@ -86,7 +107,7 @@ known empty lists are `[]`. Empty strings are not used as substitutes for missin
     "note": "No AI-generated or human-inferred annotations were added."
   },
   "source_metadata": {},
-  "crawler_version": "0.2.0"
+  "crawler_version": "0.3.0"
 }
 ```
 
@@ -94,12 +115,26 @@ known empty lists are `[]`. Empty strings are not used as substitutes for missin
 The complete unmodified source response is also retained in `raw/`, so no source data needs to
 be invented to fill a common field.
 
+`metadata.jsonl` is not a reduced summary. Each line is the complete canonical object from one
+file under `records/`, serialized without indentation. Training code never needs to join it back
+to `records/`. The per-record files exist for atomic updates and resume behavior; JSONL exists for
+batch consumption.
+
 Every completed run also rebuilds `metadata.csv` for training tools that prefer tabular input.
 It contains the same records in the same `record_id` order. Nested scalar fields use names such
 as `source_object_id`, `image_status`, and `rights_public_domain`; the training image column is
 named `image` and contains the dataset-relative local image path. Missing values are empty cells.
-The `creators`, `tags`, and `source_metadata` cells contain compact JSON because those values can
-contain lists or objects and cannot be represented losslessly as ordinary scalar CSV columns.
+Common and Met-provided fields are expanded into explicit columns, including `classification`,
+creator details, creation dates, material, dimensions, measurements, culture, period, dynasty,
+country, region, subregion, locale, city, state, county, department, repository, accession data,
+rights, source URLs, image provenance, and Wikidata identifiers. All columns are always present;
+unavailable values are empty.
+
+The `creators`, `tags`, `tag_details`, `measurements`, `additional_image_urls`, `constituents`, and
+`source_metadata` cells contain compact JSON because those values can contain lists or objects and
+cannot be represented losslessly as ordinary scalar CSV columns. First-creator convenience columns
+such as `creator_name` and `creator_nationality` are also provided for tools that only accept scalar
+columns.
 
 CSV quoting is handled automatically, including commas, quotation marks, Unicode text, and
 newlines inside descriptions. Training code should normally keep rows where
@@ -402,6 +437,10 @@ Run `python crawler.py --help` for source selection help, or
 Complete records are skipped on later ordinary runs. Raw responses cached before an interrupted
 image download are reused, and `metadata.jsonl` plus `metadata.csv` are rebuilt from individual
 record files so they do not accumulate duplicate rows.
+
+When the canonical schema version changes, older records are treated as incomplete and normalized
+again from their cached `raw/` response. An unchanged downloaded image is reused, so a schema
+upgrade does not require downloading the image again.
 
 Every run performs discovery again and writes a timestamped snapshot. Record completion is
 determined from `raw/`, `records/`, and the expected local image file rather than from an in-memory

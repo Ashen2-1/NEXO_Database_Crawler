@@ -22,11 +22,15 @@ class CanonicalRecordTests(unittest.TestCase):
             image=ImageInfo(role="primary", status="no_image", source_url=None),
         ).to_dict()
 
-        self.assertEqual(record["schema_version"], "2.0")
+        self.assertEqual(record["schema_version"], "2.1")
         self.assertIsNone(record["title"])
         self.assertIsNone(record["description"])
         self.assertIsNone(record["brand"])
         self.assertIsNone(record["model"])
+        self.assertIsNone(record["classification"])
+        self.assertIsNone(record["city"])
+        self.assertIsNone(record["region"])
+        self.assertIsNone(record["repository"])
         self.assertIsNone(record["creators"])
         self.assertEqual(record["source_metadata"], {})
 

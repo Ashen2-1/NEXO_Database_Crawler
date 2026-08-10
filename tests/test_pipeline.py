@@ -112,7 +112,7 @@ class PipelineTests(unittest.TestCase):
 
             record_path = storage.records_dir / "example" / "one-primary.json"
             record = json.loads(record_path.read_text(encoding="utf-8"))
-            self.assertEqual(record["schema_version"], "2.0")
+            self.assertEqual(record["schema_version"], "2.1")
             self.assertEqual(record["title"], "From source")
             self.assertIsNone(record["description"])
 
@@ -147,6 +147,31 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(second_batch.completed, 1)
             self.assertFalse(second_batch.limit_reached)
             self.assertTrue((storage.raw_dir / "example" / "three.json").exists())
+
+    def test_old_schema_is_upgraded_from_cache_without_redownloading(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+            client = FakeClient()
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=client,
+                storage=storage,
+                skip_images=False,
+                force=False,
+            )
+            self.assertEqual(pipeline.crawl_one("one"), "created")
+
+            record_path = storage.record_path("example", "one-primary")
+            old_record = storage.read_json(record_path)
+            old_record["schema_version"] = "2.0"
+            storage.write_json(record_path, old_record)
+
+            self.assertEqual(pipeline.crawl_one("one"), "completed")
+            self.assertEqual(adapter.fetches, 1)
+            self.assertEqual(client.image_requests, 1)
+            self.assertEqual(storage.read_json(record_path)["schema_version"], "2.1")
 
     def test_refresh_refetches_metadata_and_reuses_unchanged_image(self):
         with self.temporary_directory() as temporary_directory:

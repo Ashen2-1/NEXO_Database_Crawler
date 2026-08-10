@@ -98,7 +98,17 @@ class MetMuseumAdapterTests(unittest.TestCase):
             "department": "Photographs",
             "classification": "Photographs",
             "artistDisplayName": "Source Artist",
+            "artistAlphaSort": "Artist, Source",
+            "artistNationality": "American",
             "country": "United States",
+            "region": "North America",
+            "city": "New York",
+            "geographyType": "Made in",
+            "repository": "Example Repository",
+            "objectWikidata_URL": "https://www.wikidata.org/wiki/Q42",
+            "GalleryNumber": "100",
+            "isHighlight": False,
+            "isTimelineWork": True,
             "tags": [{"term": "Trees"}],
         }
         candidate = self.adapter.image_candidates("42", raw)[0]
@@ -122,7 +132,16 @@ class MetMuseumAdapterTests(unittest.TestCase):
         self.assertEqual(record["title"], "Source title")
         self.assertIsNone(record["description"])
         self.assertEqual(record["creators"][0]["name"], "Source Artist")
+        self.assertEqual(record["creators"][0]["sort_name"], "Artist, Source")
+        self.assertEqual(record["classification"], "Photographs")
         self.assertEqual(record["country"], "United States")
+        self.assertEqual(record["region"], "North America")
+        self.assertEqual(record["city"], "New York")
+        self.assertEqual(record["geography_type"], "Made in")
+        self.assertEqual(record["repository"], "Example Repository")
+        self.assertEqual(record["gallery_number"], "100")
+        self.assertFalse(record["is_highlight"])
+        self.assertTrue(record["is_timeline_work"])
         self.assertEqual(record["tags"], ["Trees"])
         self.assertIsNone(record["brand"])
         self.assertEqual(record["annotation"]["method"], "none")

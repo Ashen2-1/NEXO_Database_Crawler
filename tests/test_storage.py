@@ -68,13 +68,27 @@ class StorageTests(unittest.TestCase):
                     },
                     "title": "Portrait, with comma",
                     "description": "First line\nSecond line",
-                    "creators": [{"name": "Example Artist", "role": "Artist"}],
+                    "classification": "Photographs",
+                    "creators": [
+                        {
+                            "name": "Example Artist",
+                            "role": "Artist",
+                            "nationality": "American",
+                        }
+                    ],
                     "creation_date": {"display": "1900", "start_year": 1900},
+                    "country": "United States",
+                    "region": "North America",
+                    "city": "New York",
                     "tags": ["portrait", "photograph"],
                     "rights": {"public_domain": True},
                     "annotation": {"reviewed": False},
-                    "source_metadata": {"locale": None},
-                    "schema_version": "2.0",
+                    "source_metadata": {
+                        "locale": None,
+                        "additional_image_urls": ["https://example.test/alternate.jpg"],
+                        "measurements": [{"width": 10}],
+                    },
+                    "schema_version": "2.1",
                 },
             )
 
@@ -86,14 +100,30 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(row["title"], "Portrait, with comma")
             self.assertEqual(row["description"], "First line\nSecond line")
             self.assertEqual(row["creation_start_year"], "1900")
+            self.assertEqual(row["classification"], "Photographs")
+            self.assertEqual(row["creator_name"], "Example Artist")
+            self.assertEqual(row["creator_nationality"], "American")
+            self.assertEqual(row["country"], "United States")
+            self.assertEqual(row["region"], "North America")
+            self.assertEqual(row["city"], "New York")
             self.assertEqual(row["rights_public_domain"], "true")
             self.assertEqual(row["annotation_reviewed"], "false")
             self.assertEqual(
                 json.loads(row["creators"]),
-                [{"name": "Example Artist", "role": "Artist"}],
+                [
+                    {
+                        "name": "Example Artist",
+                        "role": "Artist",
+                        "nationality": "American",
+                    }
+                ],
             )
             self.assertEqual(json.loads(row["tags"]), ["portrait", "photograph"])
-            self.assertEqual(json.loads(row["source_metadata"]), {"locale": None})
+            self.assertEqual(json.loads(row["measurements"]), [{"width": 10}])
+            self.assertEqual(
+                json.loads(row["additional_image_urls"]),
+                ["https://example.test/alternate.jpg"],
+            )
 
     def test_resume_check_requires_downloaded_image_file(self):
         with self.temporary_directory() as temporary_directory:
@@ -103,6 +133,7 @@ class StorageTests(unittest.TestCase):
             storage.write_json(
                 record_path,
                 {
+                    "schema_version": "2.1",
                     "image": {
                         "status": "downloaded",
                         "local_path": "images/example/one.jpg",
@@ -160,6 +191,7 @@ class StorageTests(unittest.TestCase):
             storage.write_json(
                 record_path,
                 {
+                    "schema_version": "2.1",
                     "source": {"retrieved_at": "2026-01-01T00:00:00Z"},
                     "image": {"status": "no_image", "local_path": None},
                 },
@@ -178,6 +210,21 @@ class StorageTests(unittest.TestCase):
                     checked_after="2025-12-01T00:00:00Z",
                 )
             )
+
+    def test_old_schema_record_is_reprocessed(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            record_path = storage.record_path("example", "one")
+            storage.write_json(
+                record_path,
+                {
+                    "schema_version": "2.0",
+                    "image": {"status": "no_image", "local_path": None},
+                },
+            )
+
+            self.assertFalse(storage.record_is_complete(record_path, skip_images=False))
 
 
 if __name__ == "__main__":

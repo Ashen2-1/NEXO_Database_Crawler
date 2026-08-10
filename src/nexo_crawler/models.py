@@ -8,7 +8,7 @@ from typing import Any
 from . import __version__
 
 
-SCHEMA_VERSION = "2.0"
+SCHEMA_VERSION = "2.1"
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,8 @@ class CreatorInfo:
     name: str | None = None
     role: str | None = None
     attribution: str | None = None
+    suffix: str | None = None
+    sort_name: str | None = None
     biography: str | None = None
     nationality: str | None = None
     birth_year: str | None = None
@@ -78,17 +80,38 @@ class CanonicalRecord:
     description: str | None = None
     object_type: str | None = None
     category: str | None = None
+    classification: str | None = None
     creators: list[CreatorInfo] | None = None
     creation_date: CreationDateInfo = field(default_factory=CreationDateInfo)
     material: str | None = None
     dimensions: str | None = None
     culture: str | None = None
     period: str | None = None
+    dynasty: str | None = None
+    reign: str | None = None
+    portfolio: str | None = None
     country: str | None = None
+    region: str | None = None
+    subregion: str | None = None
+    locale: str | None = None
+    city: str | None = None
+    state: str | None = None
+    county: str | None = None
+    geography_type: str | None = None
+    locus: str | None = None
+    excavation: str | None = None
+    river: str | None = None
     brand: str | None = None
     model: str | None = None
     catalog_number: str | None = None
+    accession_year: str | None = None
     department: str | None = None
+    repository: str | None = None
+    object_wikidata_url: str | None = None
+    gallery_number: str | None = None
+    is_highlight: bool | None = None
+    is_timeline_work: bool | None = None
+    link_resource: str | None = None
     tags: list[str] | None = None
     rights: RightsInfo = field(default_factory=RightsInfo)
     annotation: AnnotationInfo = field(default_factory=AnnotationInfo)
