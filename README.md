@@ -125,16 +125,21 @@ It contains the same records in the same `record_id` order. Nested scalar fields
 as `source_object_id`, `image_status`, and `rights_public_domain`; the training image column is
 named `image` and contains the dataset-relative local image path. Missing values are empty cells.
 Common and Met-provided fields are expanded into explicit columns, including `classification`,
-creator details, creation dates, material, dimensions, measurements, culture, period, dynasty,
+creator details, creation dates, material, dimensions, culture, period, dynasty,
 country, region, subregion, locale, city, state, county, department, repository, accession data,
 rights, source URLs, image provenance, and Wikidata identifiers. All columns are always present;
 unavailable values are empty.
 
-The `creators`, `tags`, `tag_details`, `measurements`, `additional_image_urls`, `constituents`, and
-`source_metadata` cells contain compact JSON because those values can contain lists or objects and
-cannot be represented losslessly as ordinary scalar CSV columns. First-creator convenience columns
-such as `creator_name` and `creator_nationality` are also provided for tools that only accept scalar
-columns.
+`metadata.csv` contains no nested JSON cells. Creator data is exposed through scalar columns such
+as `creator_name` and `creator_nationality`. Multi-value tags, additional-image URLs, and constituent
+fields use ` | ` as a separator and include corresponding count columns. The nested `creators`,
+`measurements`, `tag_details`, `constituents`, and complete `source_metadata` structures remain in
+`metadata.jsonl` and `records/`, where they can be represented without loss.
+
+Met `dimensions` and `measurements` are related but not identical. `dimensions` is the museum's
+human-readable display text. `measurements` may contain several structured groups such as Overall,
+Framed, and Weight, so it cannot be mapped safely to one fixed set of scalar CSV columns. The CSV
+keeps `dimensions`; JSONL retains both.
 
 CSV quoting is handled automatically, including commas, quotation marks, Unicode text, and
 newlines inside descriptions. Training code should normally keep rows where

@@ -46,7 +46,7 @@ class StorageTests(unittest.TestCase):
                 ["source-a:1:primary", "source-b:2:primary"],
             )
 
-    def test_rebuild_metadata_flattens_csv_and_preserves_nested_values(self):
+    def test_rebuild_metadata_flattens_csv_without_nested_json_cells(self):
         with self.temporary_directory() as temporary_directory:
             storage = DatasetStorage(Path(temporary_directory))
             storage.prepare("example")
@@ -87,6 +87,20 @@ class StorageTests(unittest.TestCase):
                         "locale": None,
                         "additional_image_urls": ["https://example.test/alternate.jpg"],
                         "measurements": [{"width": 10}],
+                        "tag_details": [
+                            {
+                                "term": "portrait",
+                                "AAT_URL": "https://vocab.example.test/portrait",
+                                "Wikidata_URL": "https://wikidata.example.test/portrait",
+                            }
+                        ],
+                        "constituents": [
+                            {
+                                "name": "Example Artist",
+                                "role": "Artist",
+                                "constituentULAN_URL": "https://ulan.example.test/artist",
+                            }
+                        ],
                     },
                     "schema_version": "2.1",
                 },
@@ -101,6 +115,7 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(row["description"], "First line\nSecond line")
             self.assertEqual(row["creation_start_year"], "1900")
             self.assertEqual(row["classification"], "Photographs")
+            self.assertEqual(row["creator_count"], "1")
             self.assertEqual(row["creator_name"], "Example Artist")
             self.assertEqual(row["creator_nationality"], "American")
             self.assertEqual(row["country"], "United States")
@@ -108,22 +123,19 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(row["city"], "New York")
             self.assertEqual(row["rights_public_domain"], "true")
             self.assertEqual(row["annotation_reviewed"], "false")
-            self.assertEqual(
-                json.loads(row["creators"]),
-                [
-                    {
-                        "name": "Example Artist",
-                        "role": "Artist",
-                        "nationality": "American",
-                    }
-                ],
-            )
-            self.assertEqual(json.loads(row["tags"]), ["portrait", "photograph"])
-            self.assertEqual(json.loads(row["measurements"]), [{"width": 10}])
-            self.assertEqual(
-                json.loads(row["additional_image_urls"]),
-                ["https://example.test/alternate.jpg"],
-            )
+            self.assertEqual(row["tags"], "portrait | photograph")
+            self.assertEqual(row["tag_count"], "2")
+            self.assertEqual(row["tag_aat_urls"], "https://vocab.example.test/portrait")
+            self.assertEqual(row["additional_image_count"], "1")
+            self.assertEqual(row["additional_image_urls"], "https://example.test/alternate.jpg")
+            self.assertEqual(row["constituent_count"], "1")
+            self.assertEqual(row["constituent_names"], "Example Artist")
+            self.assertEqual(row["constituent_ulan_urls"], "https://ulan.example.test/artist")
+            self.assertNotIn("creators", row)
+            self.assertNotIn("measurements", row)
+            self.assertNotIn("tag_details", row)
+            self.assertNotIn("constituents", row)
+            self.assertNotIn("source_metadata", row)
 
     def test_resume_check_requires_downloaded_image_file(self):
         with self.temporary_directory() as temporary_directory:

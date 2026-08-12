@@ -23,7 +23,7 @@ CSV_COLUMNS = [
     "object_type",
     "category",
     "classification",
-    "creators",
+    "creator_count",
     "creator_name",
     "creator_role",
     "creator_attribution",
@@ -41,7 +41,6 @@ CSV_COLUMNS = [
     "creation_end_year",
     "material",
     "dimensions",
-    "measurements",
     "culture",
     "period",
     "dynasty",
@@ -66,7 +65,9 @@ CSV_COLUMNS = [
     "repository",
     "gallery_number",
     "tags",
-    "tag_details",
+    "tag_count",
+    "tag_aat_urls",
+    "tag_wikidata_urls",
     "object_wikidata_url",
     "link_resource",
     "is_highlight",
@@ -85,6 +86,7 @@ CSV_COLUMNS = [
     "image_bytes",
     "image_content_type",
     "primary_image_small_url",
+    "additional_image_count",
     "additional_image_urls",
     "rights_public_domain",
     "rights_text",
@@ -93,9 +95,13 @@ CSV_COLUMNS = [
     "annotation_method",
     "annotation_reviewed",
     "annotation_note",
-    "constituents",
+    "constituent_count",
+    "constituent_names",
+    "constituent_roles",
+    "constituent_genders",
+    "constituent_ulan_urls",
+    "constituent_wikidata_urls",
     "metadata_date",
-    "source_metadata",
     "crawler_version",
     "schema_version",
 ]
@@ -112,13 +118,13 @@ def _nested(value: dict[str, Any], *keys: str) -> Any:
 
 
 def _csv_value(value: Any) -> str | int | float:
-    """Convert canonical values to stable, lossless CSV cell values."""
+    """Convert scalar canonical values to stable CSV cell values."""
     if value is None:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        raise ValueError("nested JSON values must be flattened before CSV export")
     return value
 
 
@@ -136,6 +142,29 @@ def _first_creator(record: dict[str, Any], key: str) -> Any:
     return creators[0].get(key)
 
 
+def _list_count(value: Any) -> int:
+    """Return the number of entries in a list, treating missing values as zero."""
+    return len(value) if isinstance(value, list) else 0
+
+
+def _joined_values(value: Any) -> str:
+    """Join scalar list values for a CSV cell without embedding JSON."""
+    if not isinstance(value, list):
+        return ""
+    return " | ".join(str(item) for item in value if item is not None and item != "")
+
+
+def _joined_dict_values(value: Any, key: str) -> str:
+    """Join one scalar field from each dictionary in a list, preserving list order."""
+    if not isinstance(value, list):
+        return ""
+    return " | ".join(
+        str(item[key])
+        for item in value
+        if isinstance(item, dict) and item.get(key) is not None and item.get(key) != ""
+    )
+
+
 def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
     """Flatten one canonical record into the documented training-friendly CSV schema."""
     values: dict[str, Any] = {
@@ -146,7 +175,7 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "object_type": record.get("object_type"),
         "category": record.get("category"),
         "classification": record.get("classification") or record.get("category"),
-        "creators": record.get("creators"),
+        "creator_count": _list_count(record.get("creators")),
         "creator_name": _first_creator(record, "name"),
         "creator_role": _first_creator(record, "role"),
         "creator_attribution": _first_creator(record, "attribution"),
@@ -164,7 +193,6 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "creation_end_year": _nested(record, "creation_date", "end_year"),
         "material": record.get("material"),
         "dimensions": record.get("dimensions"),
-        "measurements": _nested(record, "source_metadata", "measurements"),
         "culture": record.get("culture"),
         "period": record.get("period"),
         "dynasty": _record_or_source_metadata(record, "dynasty"),
@@ -188,8 +216,14 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "department": record.get("department"),
         "repository": _record_or_source_metadata(record, "repository"),
         "gallery_number": _record_or_source_metadata(record, "gallery_number"),
-        "tags": record.get("tags"),
-        "tag_details": _nested(record, "source_metadata", "tag_details"),
+        "tags": _joined_values(record.get("tags")),
+        "tag_count": _list_count(record.get("tags")),
+        "tag_aat_urls": _joined_dict_values(
+            _nested(record, "source_metadata", "tag_details"), "AAT_URL"
+        ),
+        "tag_wikidata_urls": _joined_dict_values(
+            _nested(record, "source_metadata", "tag_details"), "Wikidata_URL"
+        ),
         "object_wikidata_url": _record_or_source_metadata(record, "object_wikidata_url"),
         "link_resource": _record_or_source_metadata(record, "link_resource"),
         "is_highlight": _record_or_source_metadata(record, "is_highlight"),
@@ -208,7 +242,12 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "image_bytes": _nested(record, "image", "bytes"),
         "image_content_type": _nested(record, "image", "content_type"),
         "primary_image_small_url": _nested(record, "source_metadata", "primary_image_small_url"),
-        "additional_image_urls": _nested(record, "source_metadata", "additional_image_urls"),
+        "additional_image_count": _list_count(
+            _nested(record, "source_metadata", "additional_image_urls")
+        ),
+        "additional_image_urls": _joined_values(
+            _nested(record, "source_metadata", "additional_image_urls")
+        ),
         "rights_public_domain": _nested(record, "rights", "public_domain"),
         "rights_text": _nested(record, "rights", "rights_text"),
         "rights_credit_line": _nested(record, "rights", "credit_line"),
@@ -216,9 +255,23 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "annotation_method": _nested(record, "annotation", "method"),
         "annotation_reviewed": _nested(record, "annotation", "reviewed"),
         "annotation_note": _nested(record, "annotation", "note"),
-        "constituents": _nested(record, "source_metadata", "constituents"),
+        "constituent_count": _list_count(_nested(record, "source_metadata", "constituents")),
+        "constituent_names": _joined_dict_values(
+            _nested(record, "source_metadata", "constituents"), "name"
+        ),
+        "constituent_roles": _joined_dict_values(
+            _nested(record, "source_metadata", "constituents"), "role"
+        ),
+        "constituent_genders": _joined_dict_values(
+            _nested(record, "source_metadata", "constituents"), "gender"
+        ),
+        "constituent_ulan_urls": _joined_dict_values(
+            _nested(record, "source_metadata", "constituents"), "constituentULAN_URL"
+        ),
+        "constituent_wikidata_urls": _joined_dict_values(
+            _nested(record, "source_metadata", "constituents"), "constituentWikidata_URL"
+        ),
         "metadata_date": _nested(record, "source_metadata", "metadata_date"),
-        "source_metadata": record.get("source_metadata"),
         "crawler_version": record.get("crawler_version"),
         "schema_version": record.get("schema_version"),
     }
