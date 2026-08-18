@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from ..http import HttpClient
@@ -32,6 +32,8 @@ class NormalizationContext:
     retrieved_at: str
     raw_path: str
     image: ImageInfo
+    enrichment_requested: bool = False
+    enrichment: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -103,3 +105,18 @@ class SourceAdapter(ABC):
     def display_reference(self, source_id: str) -> str:
         """Return a short label for progress output (default: source_key:source_id)."""
         return f"{self.source_key}:{source_id}"
+
+    def enrich(
+        self,
+        source_id: str,
+        raw: dict[str, Any],
+        client: HttpClient,
+    ) -> dict[str, Any]:
+        """Return optional source-grounded enrichment; adapters may override this."""
+        return {"description_status": "no_source"}
+
+    def matches_targets(self, raw: dict[str, Any], targets: tuple[str, ...]) -> bool:
+        """Return whether raw source metadata matches any requested thematic target."""
+        if targets:
+            raise ValueError(f"{self.source_key} does not support thematic target filtering")
+        return True

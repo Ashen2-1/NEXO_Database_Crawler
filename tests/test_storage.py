@@ -102,7 +102,7 @@ class StorageTests(unittest.TestCase):
                             }
                         ],
                     },
-                    "schema_version": "2.1",
+                    "schema_version": "2.2",
                 },
             )
 
@@ -145,7 +145,7 @@ class StorageTests(unittest.TestCase):
             storage.write_json(
                 record_path,
                 {
-                    "schema_version": "2.1",
+                    "schema_version": "2.2",
                     "image": {
                         "status": "downloaded",
                         "local_path": "images/example/one.jpg",
@@ -203,7 +203,7 @@ class StorageTests(unittest.TestCase):
             storage.write_json(
                 record_path,
                 {
-                    "schema_version": "2.1",
+                    "schema_version": "2.2",
                     "source": {"retrieved_at": "2026-01-01T00:00:00Z"},
                     "image": {"status": "no_image", "local_path": None},
                 },

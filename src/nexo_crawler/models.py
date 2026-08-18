@@ -8,7 +8,7 @@ from typing import Any
 from . import __version__
 
 
-SCHEMA_VERSION = "2.1"
+SCHEMA_VERSION = "2.2"
 
 
 @dataclass(frozen=True)
@@ -78,6 +78,10 @@ class CanonicalRecord:
     image: ImageInfo
     title: str | None = None
     description: str | None = None
+    description_status: str = "not_requested"
+    description_source: str | None = None
+    description_source_url: str | None = None
+    description_language: str | None = None
     object_type: str | None = None
     category: str | None = None
     classification: str | None = None
@@ -112,6 +116,9 @@ class CanonicalRecord:
     is_highlight: bool | None = None
     is_timeline_work: bool | None = None
     link_resource: str | None = None
+    target_person: bool = False
+    target_architecture: bool = False
+    target_painting: bool = False
     tags: list[str] | None = None
     rights: RightsInfo = field(default_factory=RightsInfo)
     annotation: AnnotationInfo = field(default_factory=AnnotationInfo)
@@ -131,6 +138,16 @@ class CanonicalRecord:
             raise ValueError("source raw_path is required")
         if not self.image.role or not self.image.status:
             raise ValueError("image role and status are required")
+        if self.description_status not in {
+            "not_requested",
+            "no_source",
+            "not_available",
+            "available",
+        }:
+            raise ValueError(f"invalid description status: {self.description_status}")
+        if self.description_status == "available":
+            if not self.description or not self.description_source or not self.description_source_url:
+                raise ValueError("an available description requires text, source, and source URL")
         if self.image.status == "downloaded":
             if not self.image.local_path or not self.image.sha256 or self.image.bytes is None:
                 raise ValueError("a downloaded image requires path, hash, and byte count")

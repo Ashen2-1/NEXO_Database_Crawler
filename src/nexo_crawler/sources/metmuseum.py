@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from ..enrichers import fetch_wikidata_description
 from ..http import HttpClient
 from ..models import (
     CanonicalRecord,
@@ -27,6 +28,22 @@ from .base import (
 
 
 API_BASE = "https://collectionapi.metmuseum.org/public/collection/v1"
+
+TARGET_SEARCHES: dict[str, list[dict[str, str]]] = {
+    "person": [
+        {"q": "Portraits", "hasImages": "true", "isHighlight": "true"},
+        {"q": "Men", "hasImages": "true", "isHighlight": "true"},
+        {"q": "Women", "hasImages": "true", "isHighlight": "true"},
+        {"q": "Portraits", "hasImages": "true"},
+    ],
+    "architecture": [
+        {"q": "Architecture", "hasImages": "true"},
+    ],
+    "painting": [
+        {"q": "painting", "medium": "Paintings", "hasImages": "true", "isHighlight": "true"},
+        {"q": "painting", "medium": "Paintings", "hasImages": "true"},
+    ],
+}
 
 
 def _positive_object_id(value: str) -> str:
@@ -91,6 +108,34 @@ def _optional_tags(payload: dict[str, Any]) -> list[str] | None:
     return [tag["term"] for tag in raw_tags if isinstance(tag, dict) and isinstance(tag.get("term"), str)]
 
 
+def _target_flags(payload: dict[str, Any]) -> dict[str, bool]:
+    """Classify supported demo targets from source-provided tags and object fields."""
+    tags = {value.casefold() for value in (_optional_tags(payload) or [])}
+    classification = str(payload.get("classification") or "").casefold()
+    object_name = str(payload.get("objectName") or "").casefold()
+    title = str(payload.get("title") or "").casefold()
+    person_tags = {
+        "boys",
+        "children",
+        "girls",
+        "human figures",
+        "men",
+        "people",
+        "portraits",
+        "women",
+    }
+    return {
+        "target_person": bool(tags & person_tags)
+        or "portrait" in classification
+        or "portrait" in object_name
+        or "portrait" in title,
+        "target_architecture": bool(tags & {"architecture", "buildings"})
+        or "architect" in classification
+        or "architect" in object_name,
+        "target_painting": "painting" in classification or "painting" in object_name,
+    }
+
+
 class MetMuseumAdapter(SourceAdapter):
     source_key = "metmuseum"
     source_name = "The Metropolitan Museum of Art"
@@ -107,6 +152,13 @@ class MetMuseumAdapter(SourceAdapter):
         )
         parser.add_argument("--ids-file", type=Path, help="UTF-8 file with one Met object ID per line")
         parser.add_argument("--query", help="Met Collection API search query")
+        parser.add_argument(
+            "--target",
+            action="append",
+            choices=sorted(TARGET_SEARCHES),
+            default=[],
+            help="curated thematic discovery; repeat for multiple targets",
+        )
         parser.add_argument(
             "--all",
             dest="all_objects",
@@ -134,9 +186,22 @@ class MetMuseumAdapter(SourceAdapter):
     def discover(self, args: argparse.Namespace, client: HttpClient) -> DiscoveryResult:
         """Collect Met IDs from direct inputs, search, or the bulk objects endpoint."""
         department_ids = args.department_id or []
+        targets = ordered_unique(args.target or [])
         if any(department_id <= 0 for department_id in department_ids):
             raise ValueError("--department-id values must be positive")
         has_explicit_ids = bool(args.object_id or args.ids_file is not None)
+        if targets and (
+            has_explicit_ids
+            or args.query
+            or args.all_objects
+            or department_ids
+            or args.updated_since
+            or args.include_results_without_images
+        ):
+            raise ValueError(
+                "--target cannot be combined with IDs, --query, --all, department, update, "
+                "or image-filter overrides"
+            )
         if args.all_objects and (has_explicit_ids or args.query):
             raise ValueError("--all cannot be combined with --object-id, --ids-file, or --query")
         if args.updated_since and not args.all_objects:
@@ -147,10 +212,39 @@ class MetMuseumAdapter(SourceAdapter):
             raise ValueError("Met search accepts only one --department-id")
         if args.include_results_without_images and not args.query:
             raise ValueError("--include-results-without-images requires --query")
-        if not has_explicit_ids and not args.query and not args.all_objects:
+        if not has_explicit_ids and not args.query and not args.all_objects and not targets:
             raise ValueError(
-                "provide --object-id, --ids-file, --query, or --all; "
+                "provide --object-id, --ids-file, --query, --target, or --all; "
                 "the crawler never fetches the whole collection implicitly"
+            )
+
+        if targets:
+            object_ids: list[str] = []
+            searches: list[dict[str, Any]] = []
+            for target in targets:
+                for parameters in TARGET_SEARCHES[target]:
+                    url = f"{API_BASE}/search?{urllib.parse.urlencode(parameters)}"
+                    response = client.get_json(url)
+                    values = response.get("objectIDs") or []
+                    if not isinstance(values, list):
+                        raise ValueError("Met target search returned an invalid objectIDs field")
+                    found = [str(value) for value in values if isinstance(value, int) and value > 0]
+                    object_ids.extend(found)
+                    searches.append(
+                        {
+                            "target": target,
+                            "parameters": parameters,
+                            "request_url": url,
+                            "total_reported": response.get("total"),
+                            "discovered_count": len(found),
+                        }
+                    )
+            source_ids = ordered_unique(object_ids)
+            return DiscoveryResult(
+                source_ids=source_ids,
+                method="targets",
+                parameters={"targets": targets, "searches": searches},
+                total_reported=len(source_ids),
             )
 
         if args.all_objects:
@@ -223,6 +317,22 @@ class MetMuseumAdapter(SourceAdapter):
             )
         return payload
 
+    def enrich(
+        self,
+        source_id: str,
+        raw: dict[str, Any],
+        client: HttpClient,
+    ) -> dict[str, Any]:
+        """Fetch the Met object's own Wikidata short description when an entity ID exists."""
+        return fetch_wikidata_description(raw.get("objectWikidata_URL"), client)
+
+    def matches_targets(self, raw: dict[str, Any], targets: tuple[str, ...]) -> bool:
+        """Accept a candidate only when Met's own fields match a requested target."""
+        if not targets:
+            return True
+        flags = _target_flags(raw)
+        return any(flags[f"target_{target}"] for target in targets)
+
     def raw_file_stem(self, source_id: str) -> str:
         """Return the filesystem stem for a Met object's raw JSON file."""
         return f"MET-{source_id}"
@@ -253,6 +363,12 @@ class MetMuseumAdapter(SourceAdapter):
         context: NormalizationContext,
     ) -> CanonicalRecord:
         """Map Met API fields to the canonical schema without inference."""
+        enrichment = context.enrichment if context.enrichment_requested else {}
+        description_status = str(
+            enrichment.get("description_status")
+            or ("no_source" if context.enrichment_requested else "not_requested")
+        )
+        targets = _target_flags(raw)
         record = CanonicalRecord(
             record_id=context.identity.record_id,
             source=SourceInfo(
@@ -266,7 +382,11 @@ class MetMuseumAdapter(SourceAdapter):
             ),
             image=context.image,
             title=raw.get("title") or None,
-            description=None,
+            description=enrichment.get("description") or None,
+            description_status=description_status,
+            description_source=enrichment.get("description_source") or None,
+            description_source_url=enrichment.get("description_source_url") or None,
+            description_language=enrichment.get("description_language") or None,
             object_type=raw.get("objectName") or None,
             category=raw.get("classification") or None,
             classification=raw.get("classification") or None,
@@ -305,6 +425,9 @@ class MetMuseumAdapter(SourceAdapter):
             is_highlight=raw.get("isHighlight"),
             is_timeline_work=raw.get("isTimelineWork"),
             link_resource=raw.get("linkResource") or None,
+            target_person=targets["target_person"],
+            target_architecture=targets["target_architecture"],
+            target_painting=targets["target_painting"],
             tags=_optional_tags(raw),
             rights=RightsInfo(
                 public_domain=raw.get("isPublicDomain"),
@@ -340,6 +463,8 @@ class MetMuseumAdapter(SourceAdapter):
                 "is_timeline_work": raw.get("isTimelineWork"),
                 "link_resource": raw.get("linkResource"),
                 "tag_details": raw.get("tags"),
+                "wikidata_entity_id": enrichment.get("wikidata_entity_id"),
+                "wikidata_label": enrichment.get("wikidata_label"),
             },
         )
         record.validate()

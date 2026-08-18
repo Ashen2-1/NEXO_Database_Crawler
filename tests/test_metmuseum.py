@@ -25,6 +25,7 @@ class MetMuseumAdapterTests(unittest.TestCase):
             "object_id": [],
             "ids_file": None,
             "query": None,
+            "target": [],
             "all_objects": False,
             "department_id": [],
             "updated_since": None,
@@ -51,6 +52,37 @@ class MetMuseumAdapterTests(unittest.TestCase):
             client,
         )
         self.assertNotIn("hasImages", client.url)
+
+    def test_target_discovery_uses_curated_image_search(self):
+        client = FakeJsonClient({"total": 2, "objectIDs": [4, 7]})
+        result = self.adapter.discover(self.arguments(target=["architecture"]), client)
+
+        self.assertEqual(result.source_ids, ["4", "7"])
+        self.assertEqual(result.method, "targets")
+        self.assertNotIn("tags=true", client.url)
+        self.assertIn("hasImages=true", client.url)
+        self.assertEqual(result.parameters["targets"], ["architecture"])
+
+    def test_target_match_uses_object_metadata_after_discovery(self):
+        self.assertTrue(
+            self.adapter.matches_targets(
+                {"tags": [{"term": "Portraits"}]},
+                ("person",),
+            )
+        )
+        self.assertFalse(
+            self.adapter.matches_targets(
+                {"title": "Oak side chair", "objectName": "Chair"},
+                ("person",),
+            )
+        )
+
+    def test_target_cannot_be_combined_with_query(self):
+        with self.assertRaisesRegex(ValueError, "--target cannot be combined"):
+            self.adapter.discover(
+                self.arguments(target=["person"], query="portrait"),
+                FakeJsonClient({}),
+            )
 
     def test_all_discovers_inventory_with_department_and_update_filters(self):
         client = FakeJsonClient({"total": 2, "objectIDs": [8, 9]})
@@ -109,7 +141,7 @@ class MetMuseumAdapterTests(unittest.TestCase):
             "GalleryNumber": "100",
             "isHighlight": False,
             "isTimelineWork": True,
-            "tags": [{"term": "Trees"}],
+            "tags": [{"term": "Trees"}, {"term": "Portraits"}],
         }
         candidate = self.adapter.image_candidates("42", raw)[0]
         context = NormalizationContext(
@@ -142,9 +174,12 @@ class MetMuseumAdapterTests(unittest.TestCase):
         self.assertEqual(record["gallery_number"], "100")
         self.assertFalse(record["is_highlight"])
         self.assertTrue(record["is_timeline_work"])
-        self.assertEqual(record["tags"], ["Trees"])
+        self.assertEqual(record["tags"], ["Trees", "Portraits"])
         self.assertIsNone(record["brand"])
         self.assertEqual(record["annotation"]["method"], "none")
+        self.assertTrue(record["target_person"])
+        self.assertFalse(record["target_architecture"])
+        self.assertFalse(record["target_painting"])
 
     def test_non_public_domain_image_is_blocked_by_adapter(self):
         candidate = self.adapter.image_candidates(

@@ -15,7 +15,9 @@ src/
 `-- nexo_crawler/
     |-- cli.py                     source selection and shared CLI options
     |-- http.py                    rate limiting, retries, JSON and binary requests
-    |-- models.py                  canonical schema 2.1
+    |-- enrichers/
+    |   `-- wikidata.py            exact-entity Wikidata description enrichment
+    |-- models.py                  canonical schema 2.2
     |-- pipeline.py                source-independent crawl orchestration
     |-- storage.py                 files, JSONL/CSV exports, manifest, resume checks
     `-- sources/
@@ -34,7 +36,7 @@ known empty lists are `[]`. Empty strings are not used as substitutes for missin
 
 ```json
 {
-  "schema_version": "2.1",
+  "schema_version": "2.2",
   "record_id": "metmuseum:437329:primary",
   "source": {
     "key": "metmuseum",
@@ -56,6 +58,10 @@ known empty lists are `[]`. Empty strings are not used as substitutes for missin
   },
   "title": "The Abduction of the Sabine Women",
   "description": null,
+  "description_status": "not_requested",
+  "description_source": null,
+  "description_source_url": null,
+  "description_language": null,
   "object_type": "Painting",
   "category": "Paintings",
   "classification": "Paintings",
@@ -94,6 +100,9 @@ known empty lists are `[]`. Empty strings are not used as substitutes for missin
   "is_highlight": false,
   "is_timeline_work": false,
   "link_resource": null,
+  "target_person": true,
+  "target_architecture": false,
+  "target_painting": true,
   "tags": null,
   "rights": {
     "public_domain": true,
@@ -107,7 +116,7 @@ known empty lists are `[]`. Empty strings are not used as substitutes for missin
     "note": "No AI-generated or human-inferred annotations were added."
   },
   "source_metadata": {},
-  "crawler_version": "0.3.0"
+  "crawler_version": "0.4.0"
 }
 ```
 
@@ -129,6 +138,19 @@ creator details, creation dates, material, dimensions, culture, period, dynasty,
 country, region, subregion, locale, city, state, county, department, repository, accession data,
 rights, source URLs, image provenance, and Wikidata identifiers. All columns are always present;
 unavailable values are empty.
+
+Description provenance is explicit in `description_status`, `description_source`,
+`description_source_url`, and `description_language`. `description_status` is one of:
+
+- `not_requested`: the run did not use `--enrich-descriptions`;
+- `no_source`: the Met object has no object-level Wikidata entity link;
+- `not_available`: the linked Wikidata entity has no English description;
+- `available`: `description` contains the English description from that exact entity.
+
+The crawler never searches Wikidata by title and never substitutes the artist's biography for the
+artwork description. This avoids attaching a plausible but incorrect entity to a training row.
+Wikidata descriptions are short source metadata, not detailed visual captions; their quality and
+specificity still need to be evaluated for the intended training task.
 
 `metadata.csv` contains no nested JSON cells. Creator data is exposed through scalar columns such
 as `creator_name` and `creator_nationality`. Multi-value tags, additional-image URLs, and constituent
@@ -159,6 +181,9 @@ dataset/
 |-- raw/
 |   `-- metmuseum/
 |       `-- MET-437329.json
+|-- enrichment/
+|   `-- metmuseum/
+|       `-- MET-437329-description.json
 |-- records/
 |   `-- metmuseum/
 |       `-- MET-437329-primary.json
@@ -177,6 +202,9 @@ primary image only, but the adapter contract supports multiple image candidates 
 Each file in `discovery/` records how IDs were selected, the API URL and filters, the reported
 total, the discovery time, and the complete discovered ID list. This makes a bulk run
 reproducible even if the upstream collection later changes.
+
+`enrichment/` caches the selected object-level Wikidata label, description, language, entity ID,
+source URL, and retrieval status. It is separate from the unmodified Met response under `raw/`.
 
 `state/` stores resumable refresh-job state for `--updated-since` and `--force`. It is part of
 the dataset's operational state and should be kept with the other output files.
@@ -276,6 +304,30 @@ python crawler.py metmuseum --object-id 437329 --query "sunflowers" --limit 20
 ```
 
 Met search accepts only one `--department-id` per query.
+
+### Curated thematic targets
+
+Use `--target` to discover person, architecture, or painting candidates. Targets can be repeated:
+
+```powershell
+python crawler.py metmuseum --target person --target painting --limit 150
+```
+
+For a training-ready public-domain image batch with source-grounded short descriptions:
+
+```powershell
+python crawler.py metmuseum --target person --limit 150 `
+  --public-domain-only --enrich-descriptions --output dataset_targeted
+```
+
+Target discovery is two-stage. The Met search API supplies candidate IDs; then the crawler checks
+each object's own tags, classification, object type, and title before accepting it. Search-only
+matches that do not satisfy those source fields are filtered out and do not consume `--limit`.
+The `target_person`, `target_architecture`, and `target_painting` CSV columns preserve the final
+source-derived flags. A record can match more than one target, such as a painted portrait.
+
+Curated targets cannot be combined with IDs, `--query`, `--all`, departments, incremental dates,
+or `--include-results-without-images`.
 
 ### Broad collection discovery
 
@@ -385,6 +437,29 @@ The raw API payload and canonical metadata are still saved. A new image candidat
 `skipped` status; an already downloaded, unchanged image may retain its existing downloaded
 status and local path during a metadata refresh.
 
+### Public-domain-only training rows
+
+```powershell
+python crawler.py metmuseum --target person --public-domain-only --limit 150
+```
+
+`rights_public_domain` is copied from the Met API's `isPublicDomain` field. `true` means the Met
+marks the work/image as public domain under its Open Access policy. `false` means it is not marked
+public domain; it does not necessarily explain the legal reason. The crawler does not download
+that image. With `--public-domain-only`, the entire candidate is excluded from records and CSV.
+
+### Source-grounded descriptions
+
+```powershell
+python crawler.py metmuseum --target person --enrich-descriptions --limit 150
+```
+
+When the Met supplies `objectWikidata_URL`, this option reads the English description from that
+exact Wikidata entity and stores its provenance. It does not call a generative AI model and does
+not fabricate missing descriptions. Use `description_status == "available"` to select populated
+rows; keep the status columns so training code can distinguish missing source data from a run that
+did not request enrichment.
+
 ### Force a refresh
 
 Normally complete records are reused. `--force` creates a resumable refresh job, fetches and
@@ -428,6 +503,8 @@ Available common options are:
 | `--limit` | `100` | Maximum objects requiring work attempted in this run |
 | `--output` | `dataset` | Dataset output directory |
 | `--skip-images` | off | Save source metadata without image files |
+| `--public-domain-only` | off | Exclude objects not explicitly marked public domain |
+| `--enrich-descriptions` | off | Fetch exact-entity source descriptions when supported |
 | `--force` | off | Refresh metadata and download images again in a resumable job |
 | `--timeout` | `30` | Per-request timeout in seconds |
 | `--retries` | `3` | Retries for temporary HTTP failures |
@@ -457,7 +534,8 @@ are recognized on the next run and do not consume the next batch.
 
 The Met adapter downloads an image only when the API explicitly returns
 `isPublicDomain: true`. Other metadata is still stored, with the image status set to
-`not_public_domain`.
+`not_public_domain`. With `--public-domain-only`, those records are filtered from the dataset
+entirely.
 
 ## Invalid combinations
 
@@ -468,6 +546,7 @@ The CLI rejects ambiguous or unsupported combinations:
 - `--department-id` without `--query` or `--all`;
 - more than one `--department-id` in query mode;
 - `--include-results-without-images` without `--query`;
+- `--target` combined with IDs, `--query`, `--all`, departments, update dates, or image overrides;
 - zero or negative limits, timeouts, department IDs, or object IDs.
 
 ## Tests

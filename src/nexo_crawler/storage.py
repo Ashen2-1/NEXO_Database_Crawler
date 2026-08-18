@@ -19,6 +19,10 @@ CSV_COLUMNS = [
     "record_id",
     "image",
     "description",
+    "description_status",
+    "description_source",
+    "description_source_url",
+    "description_language",
     "title",
     "object_type",
     "category",
@@ -72,6 +76,11 @@ CSV_COLUMNS = [
     "link_resource",
     "is_highlight",
     "is_timeline_work",
+    "target_person",
+    "target_architecture",
+    "target_painting",
+    "wikidata_entity_id",
+    "wikidata_label",
     "source_key",
     "source_name",
     "source_object_id",
@@ -171,6 +180,10 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "record_id": record.get("record_id"),
         "image": _nested(record, "image", "local_path"),
         "description": record.get("description"),
+        "description_status": record.get("description_status"),
+        "description_source": record.get("description_source"),
+        "description_source_url": record.get("description_source_url"),
+        "description_language": record.get("description_language"),
         "title": record.get("title"),
         "object_type": record.get("object_type"),
         "category": record.get("category"),
@@ -228,6 +241,11 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "link_resource": _record_or_source_metadata(record, "link_resource"),
         "is_highlight": _record_or_source_metadata(record, "is_highlight"),
         "is_timeline_work": _record_or_source_metadata(record, "is_timeline_work"),
+        "target_person": record.get("target_person"),
+        "target_architecture": record.get("target_architecture"),
+        "target_painting": record.get("target_painting"),
+        "wikidata_entity_id": _nested(record, "source_metadata", "wikidata_entity_id"),
+        "wikidata_label": _nested(record, "source_metadata", "wikidata_label"),
         "source_key": _nested(record, "source", "key"),
         "source_name": _nested(record, "source", "name"),
         "source_object_id": _nested(record, "source", "object_id"),
@@ -314,6 +332,7 @@ class DatasetStorage:
         self.output_dir = output_dir
         self.images_dir = output_dir / "images"
         self.raw_dir = output_dir / "raw"
+        self.enrichment_dir = output_dir / "enrichment"
         self.records_dir = output_dir / "records"
         self.discovery_dir = output_dir / "discovery"
         self.state_dir = output_dir / "state"
@@ -325,6 +344,7 @@ class DatasetStorage:
         """Create per-source subdirectories under images, raw, and records."""
         (self.images_dir / source_key).mkdir(parents=True, exist_ok=True)
         (self.raw_dir / source_key).mkdir(parents=True, exist_ok=True)
+        (self.enrichment_dir / source_key).mkdir(parents=True, exist_ok=True)
         (self.records_dir / source_key).mkdir(parents=True, exist_ok=True)
         (self.discovery_dir / source_key).mkdir(parents=True, exist_ok=True)
         (self.state_dir / source_key).mkdir(parents=True, exist_ok=True)
@@ -336,6 +356,10 @@ class DatasetStorage:
     def record_path(self, source_key: str, file_stem: str) -> Path:
         """Return the path for a canonical record JSON file."""
         return self.records_dir / source_key / f"{file_stem}.json"
+
+    def enrichment_path(self, source_key: str, file_stem: str) -> Path:
+        """Return the path for a source object's cached enrichment response."""
+        return self.enrichment_dir / source_key / f"{file_stem}-description.json"
 
     def image_path(self, source_key: str, file_stem: str, extension: str) -> Path:
         """Return the path for a downloaded image file."""
@@ -390,6 +414,7 @@ class DatasetStorage:
         record_path: Path,
         skip_images: bool,
         checked_after: str | None = None,
+        require_description_enrichment: bool = False,
     ) -> bool:
         """Return whether an existing record satisfies resume/skip criteria."""
         if not record_path.exists():
@@ -400,6 +425,8 @@ class DatasetStorage:
             return False
 
         if record.get("schema_version") != SCHEMA_VERSION:
+            return False
+        if require_description_enrichment and record.get("description_status") == "not_requested":
             return False
 
         image = record.get("image")

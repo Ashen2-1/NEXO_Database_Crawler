@@ -2,6 +2,7 @@ import argparse
 import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 
 from nexo_crawler.http import HttpResponse
@@ -75,6 +76,15 @@ class FakeAdapter(SourceAdapter):
             ),
             image=context.image,
             title=raw.get("title"),
+            description=context.enrichment.get("description"),
+            description_status=(
+                context.enrichment.get("description_status", "no_source")
+                if context.enrichment_requested
+                else "not_requested"
+            ),
+            description_source=context.enrichment.get("description_source"),
+            description_source_url=context.enrichment.get("description_source_url"),
+            description_language=context.enrichment.get("description_language"),
         )
 
     def api_url(self, source_id):
@@ -112,7 +122,7 @@ class PipelineTests(unittest.TestCase):
 
             record_path = storage.records_dir / "example" / "one-primary.json"
             record = json.loads(record_path.read_text(encoding="utf-8"))
-            self.assertEqual(record["schema_version"], "2.1")
+            self.assertEqual(record["schema_version"], "2.2")
             self.assertEqual(record["title"], "From source")
             self.assertIsNone(record["description"])
 
@@ -148,6 +158,106 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse(second_batch.limit_reached)
             self.assertTrue((storage.raw_dir / "example" / "three.json").exists())
 
+    def test_public_domain_only_filters_without_creating_a_record(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+            adapter.fetch = lambda source_id, client: {
+                "id": source_id,
+                "title": "Copyrighted source",
+                "isPublicDomain": False,
+            }
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=FakeClient(),
+                storage=storage,
+                skip_images=False,
+                force=False,
+                public_domain_only=True,
+            )
+
+            summary = pipeline.crawl_many(["one"], max_new=1)
+
+            self.assertEqual(summary.filtered, 1)
+            self.assertEqual(summary.completed, 0)
+            self.assertFalse(storage.record_path("example", "one-primary").exists())
+
+    def test_inaccessible_source_candidate_is_filtered_without_consuming_limit(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+
+            def fetch(source_id, client):
+                if source_id == "gone":
+                    raise urllib.error.HTTPError(
+                        "https://api.example.test/gone", 404, "Not Found", {}, None
+                    )
+                return {"id": source_id, "title": "Available"}
+
+            adapter.fetch = fetch
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=FakeClient(),
+                storage=storage,
+                skip_images=False,
+                force=False,
+            )
+
+            summary = pipeline.crawl_many(["gone", "available"], max_new=1)
+
+            self.assertEqual(summary.filtered, 1)
+            self.assertEqual(summary.completed, 1)
+            self.assertEqual(summary.failed, 0)
+
+    def test_description_enrichment_is_cached_and_marks_record_complete(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+            client = FakeClient()
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=client,
+                storage=storage,
+                skip_images=False,
+                force=False,
+                enrich_descriptions=True,
+            )
+
+            self.assertEqual(pipeline.crawl_one("one"), "created")
+            record = storage.read_json(storage.record_path("example", "one-primary"))
+
+            self.assertEqual(record["description_status"], "no_source")
+            self.assertTrue(storage.enrichment_path("example", "one").exists())
+            self.assertTrue(pipeline.is_complete("one"))
+
+    def test_blocked_image_status_takes_precedence_over_missing_url(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            pipeline = CrawlPipeline(
+                adapter=FakeAdapter(),
+                client=FakeClient(),
+                storage=storage,
+                skip_images=False,
+                force=False,
+            )
+
+            image = pipeline._download_image(
+                "one",
+                ImageCandidate(
+                    key="primary",
+                    role="primary",
+                    source_url=None,
+                    download_allowed=False,
+                    blocked_status="not_public_domain",
+                ),
+            )
+
+            self.assertEqual(image.status, "not_public_domain")
+
     def test_old_schema_is_upgraded_from_cache_without_redownloading(self):
         with self.temporary_directory() as temporary_directory:
             storage = DatasetStorage(Path(temporary_directory))
@@ -171,7 +281,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(pipeline.crawl_one("one"), "completed")
             self.assertEqual(adapter.fetches, 1)
             self.assertEqual(client.image_requests, 1)
-            self.assertEqual(storage.read_json(record_path)["schema_version"], "2.1")
+            self.assertEqual(storage.read_json(record_path)["schema_version"], "2.2")
 
     def test_refresh_refetches_metadata_and_reuses_unchanged_image(self):
         with self.temporary_directory() as temporary_directory:

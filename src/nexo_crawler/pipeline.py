@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import urllib.error
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
@@ -28,6 +29,7 @@ class CrawlSummary:
     updated: int
     unchanged: int
     skipped: int
+    filtered: int
     failed: int
     limit_reached: bool
 
@@ -44,6 +46,9 @@ class CrawlPipeline:
         storage: DatasetStorage,
         skip_images: bool,
         force: bool,
+        enrich_descriptions: bool = False,
+        public_domain_only: bool = False,
+        targets: tuple[str, ...] = (),
         refresh_after: str | None = None,
     ) -> None:
         """Wire up the adapter, HTTP client, storage layer, and crawl flags."""
@@ -52,6 +57,9 @@ class CrawlPipeline:
         self.storage = storage
         self.skip_images = skip_images
         self.force = force
+        self.enrich_descriptions = enrich_descriptions
+        self.public_domain_only = public_domain_only
+        self.targets = targets
         self.refresh_after = refresh_after
 
     def _record_is_complete(self, source_id: str, candidate: ImageCandidate) -> bool:
@@ -62,6 +70,7 @@ class CrawlPipeline:
             record_path,
             self.skip_images,
             checked_after=self.refresh_after,
+            require_description_enrichment=self.enrich_descriptions,
         )
 
     def is_complete(self, source_id: str) -> bool:
@@ -138,14 +147,14 @@ class CrawlPipeline:
         candidate: ImageCandidate,
     ) -> ImageInfo:
         """Download or skip an image candidate and return its ImageInfo status."""
-        if not candidate.source_url:
-            return ImageInfo(role=candidate.role, status="no_image", source_url=None)
         if not candidate.download_allowed:
             return ImageInfo(
                 role=candidate.role,
                 status=candidate.blocked_status,
                 source_url=candidate.source_url,
             )
+        if not candidate.source_url:
+            return ImageInfo(role=candidate.role, status="no_image", source_url=None)
         if self.skip_images:
             return ImageInfo(role=candidate.role, status="skipped", source_url=candidate.source_url)
 
@@ -167,6 +176,26 @@ class CrawlPipeline:
             bytes=len(response.data),
             content_type=response.content_type,
         )
+
+    def _load_enrichment(self, source_id: str, raw: dict[str, Any]) -> dict[str, Any]:
+        """Load cached description enrichment or fetch and cache it when requested."""
+        if not self.enrich_descriptions:
+            return {}
+        path = self.storage.enrichment_path(
+            self.adapter.source_key,
+            self.adapter.raw_file_stem(source_id),
+        )
+        if path.exists() and not self.force and self.refresh_after is None:
+            return self.storage.read_json(path)
+        enrichment = {
+            "schema_version": "1.0",
+            "source": self.adapter.source_key,
+            "source_object_id": source_id,
+            "retrieved_at": utc_now(),
+            **self.adapter.enrich(source_id, raw, self.client),
+        }
+        self.storage.write_json(path, enrichment)
+        return enrichment
 
     def crawl_one(self, source_id: str) -> str:
         """Fetch, normalize, and persist one source object and return its change outcome."""
@@ -196,6 +225,33 @@ class CrawlPipeline:
             else:
                 raw = old_raw
                 retrieved_at = self.storage.raw_file_timestamp(raw_path)
+
+            if not self.adapter.matches_targets(raw, self.targets):
+                self.storage.append_manifest(
+                    {
+                        "timestamp": utc_now(),
+                        "source": self.adapter.source_key,
+                        "source_object_id": source_id,
+                        "source_api_url": source_api_url,
+                        "status": "filtered_target_mismatch",
+                        "requested_targets": list(self.targets),
+                    }
+                )
+                return "filtered"
+
+            if self.public_domain_only and raw.get("isPublicDomain") is not True:
+                self.storage.append_manifest(
+                    {
+                        "timestamp": utc_now(),
+                        "source": self.adapter.source_key,
+                        "source_object_id": source_id,
+                        "source_api_url": source_api_url,
+                        "status": "filtered_not_public_domain",
+                    }
+                )
+                return "filtered"
+
+            enrichment = self._load_enrichment(source_id, raw)
             candidates = self.adapter.image_candidates(source_id, raw)
 
             if old_raw is None:
@@ -217,7 +273,11 @@ class CrawlPipeline:
                 if (
                     not self.force
                     and self.refresh_after is None
-                    and self.storage.record_is_complete(record_path, self.skip_images)
+                    and self.storage.record_is_complete(
+                        record_path,
+                        self.skip_images,
+                        require_description_enrichment=self.enrich_descriptions,
+                    )
                 ):
                     existing = self.storage.read_json(record_path)
                     existing_image = existing.get("image")
@@ -233,6 +293,8 @@ class CrawlPipeline:
                     retrieved_at=retrieved_at,
                     raw_path=self.storage.relative_path(raw_path),
                     image=image,
+                    enrichment_requested=self.enrich_descriptions,
+                    enrichment=enrichment,
                 )
                 record = self.adapter.normalize(source_id, raw, context)
                 self.storage.write_json(record_path, record.to_dict())
@@ -250,6 +312,32 @@ class CrawlPipeline:
                 }
             )
             return change_status
+        except urllib.error.HTTPError as error:
+            if error.code in {403, 404}:
+                self.storage.append_manifest(
+                    {
+                        "timestamp": utc_now(),
+                        "source": self.adapter.source_key,
+                        "source_object_id": source_id,
+                        "source_api_url": source_api_url,
+                        "status": "filtered_source_unavailable",
+                        "http_status": error.code,
+                        "error": str(error),
+                    }
+                )
+                return "filtered"
+            self.storage.append_manifest(
+                {
+                    "timestamp": utc_now(),
+                    "source": self.adapter.source_key,
+                    "source_object_id": source_id,
+                    "source_api_url": source_api_url,
+                    "status": "failed",
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                }
+            )
+            raise
         except Exception as error:
             self.storage.append_manifest(
                 {
@@ -278,6 +366,7 @@ class CrawlPipeline:
         updated = 0
         unchanged = 0
         skipped = 0
+        filtered = 0
         failed = 0
         attempted = 0
         examined = 0
@@ -300,6 +389,9 @@ class CrawlPipeline:
                 result = self.crawl_one(source_id)
                 if result == "skipped":
                     skipped += 1
+                    attempted -= 1
+                elif result == "filtered":
+                    filtered += 1
                     attempted -= 1
                 else:
                     completed += 1
@@ -325,6 +417,7 @@ class CrawlPipeline:
             updated=updated,
             unchanged=unchanged,
             skipped=skipped,
+            filtered=filtered,
             failed=failed,
             limit_reached=limit_reached,
         )

@@ -39,6 +39,16 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", type=Path, default=Path("dataset"), help="dataset directory")
     parser.add_argument("--skip-images", action="store_true", help="save metadata without image files")
     parser.add_argument(
+        "--public-domain-only",
+        action="store_true",
+        help="keep only source objects explicitly marked public domain",
+    )
+    parser.add_argument(
+        "--enrich-descriptions",
+        action="store_true",
+        help="fetch optional source-grounded descriptions from adapter-supported sources",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="start or resume a refresh job and download images again",
@@ -98,7 +108,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     adapter = args.adapter_class()
     try:
-        if getattr(args, "query", None):
+        if getattr(args, "target", None):
+            print(f"Discovering {adapter.source_name} targets: {', '.join(args.target)} ...")
+        elif getattr(args, "query", None):
             print(f"Searching {adapter.source_name} for {args.query!r} ...")
         elif getattr(args, "all_objects", False):
             print(f"Discovering objects from {adapter.source_name} ...")
@@ -160,6 +172,9 @@ def main(argv: list[str] | None = None) -> int:
         storage=storage,
         skip_images=args.skip_images,
         force=args.force,
+        enrich_descriptions=args.enrich_descriptions,
+        public_domain_only=args.public_domain_only,
+        targets=tuple(getattr(args, "target", ()) or ()),
         refresh_after=refresh_state["started_at"] if refresh_state is not None else None,
     )
     print(
@@ -181,6 +196,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{index}/{total}] {reference}: already complete")
         elif status == "failed":
             print(f"[{index}/{total}] {reference}: failed: {error}", file=sys.stderr)
+        elif status == "filtered":
+            if show_individual_skips:
+                print(f"[{index}/{total}] {reference}: filtered (target or rights rule)")
         elif status == "unchanged":
             print(f"[{index}/{total}] {reference}: checked, unchanged")
         elif status == "updated":
@@ -199,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     metadata_count = storage.rebuild_metadata()
     print(
         f"Done: {summary.completed} completed, {summary.skipped} skipped, "
+        f"{summary.filtered} filtered, "
         f"{summary.failed} failed; "
         f"metadata.jsonl and metadata.csv contain {metadata_count} record(s)."
     )
@@ -221,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                 "updated": summary.updated,
                 "unchanged": summary.unchanged,
                 "skipped": summary.skipped,
+                "filtered": summary.filtered,
                 "failed": summary.failed,
                 "limit_reached": summary.limit_reached,
             },
