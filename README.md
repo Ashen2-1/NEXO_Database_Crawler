@@ -326,6 +326,64 @@ matches that do not satisfy those source fields are filtered out and do not cons
 The `target_person`, `target_architecture`, and `target_painting` CSV columns preserve the final
 source-derived flags. A record can match more than one target, such as a painted portrait.
 
+#### Exact target discovery queries
+
+The first stage currently runs these Met Collection API searches in the listed order. Every query
+requires `hasImages=true`. Results are combined and duplicate object IDs are removed while
+preserving the first-seen order, so highlight results are examined first.
+
+| Target | Candidate searches |
+|---|---|
+| `person` | `q=Portraits&isHighlight=true`; `q=Men&isHighlight=true`; `q=Women&isHighlight=true`; then the broader `q=Portraits` |
+| `architecture` | `q=Architecture` |
+| `painting` | `q=painting&medium=Paintings&isHighlight=true`; then `q=painting&medium=Paintings` |
+
+These searches only create a candidate list. A search hit is not automatically labeled as a
+target match.
+
+#### Exact target classification rules
+
+For the second stage, the crawler reads the candidate object's own Met API response. Text matching
+is case-insensitive. Tag matches below are exact tag-term matches after case normalization; text
+field checks use substring matching.
+
+- `target_person=true` when at least one Met tag is `Boys`, `Children`, `Girls`,
+  `Human Figures`, `Men`, `People`, `Portraits`, or `Women`; **or** when `classification`,
+  `objectName`, or `title` contains `portrait`.
+- `target_architecture=true` when at least one Met tag is `Architecture` or `Buildings`; **or**
+  when `classification` or `objectName` contains `architect`. This also matches source values such
+  as `Architectural` and `Sculpture-Architectural`.
+- `target_painting=true` when `classification` or `objectName` contains `painting`. Painting does
+  not currently use title or tag matching in the second stage.
+
+In equivalent pseudocode:
+
+```text
+person = person_tag_matches
+         OR "portrait" in classification
+         OR "portrait" in objectName
+         OR "portrait" in title
+
+architecture = architecture_tag_matches
+               OR "architect" in classification
+               OR "architect" in objectName
+
+painting = "painting" in classification
+           OR "painting" in objectName
+```
+
+When several `--target` options are supplied, a candidate is accepted if **any** requested target
+flag is true. All three flags are still calculated and exported, so one record may be both person
+and painting. When no `--target` option is used, these flags are still calculated for CSV metadata,
+but they do not filter the crawl.
+
+These flags describe the Met's source metadata, not an AI inspection of image pixels. For example,
+an object tagged `Men` may be a vessel or piece of furniture that depicts a man as a secondary
+decoration; `target_person=true` does not guarantee that a person is the dominant visual subject.
+Likewise, target matching does not depend on whether a Wikidata description exists. Stricter
+training subsets can additionally filter `classification`, `object_type`, `tags`, title, and
+`description_status`, or add human/vision-model review as a separate downstream stage.
+
 Curated targets cannot be combined with IDs, `--query`, `--all`, departments, incremental dates,
 or `--include-results-without-images`.
 
