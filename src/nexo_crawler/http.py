@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-DEFAULT_USER_AGENT = "NEXO-Database-Crawler/0.4 (source-grounded research dataset)"
+DEFAULT_USER_AGENT = "NEXO-Database-Crawler/0.5 (source-grounded research dataset)"
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 

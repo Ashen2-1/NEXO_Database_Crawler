@@ -415,6 +415,8 @@ class DatasetStorage:
         skip_images: bool,
         checked_after: str | None = None,
         require_description_enrichment: bool = False,
+        require_image: bool = False,
+        require_description: bool = False,
     ) -> bool:
         """Return whether an existing record satisfies resume/skip criteria."""
         if not record_path.exists():
@@ -427,6 +429,12 @@ class DatasetStorage:
         if record.get("schema_version") != SCHEMA_VERSION:
             return False
         if require_description_enrichment and record.get("description_status") == "not_requested":
+            return False
+        if require_description and (
+            record.get("description_status") != "available"
+            or not isinstance(record.get("description"), str)
+            or not record["description"].strip()
+        ):
             return False
 
         image = record.get("image")
@@ -447,6 +455,13 @@ class DatasetStorage:
         if skip_images:
             return True
         status = image.get("status")
+        if require_image:
+            local_path = image.get("local_path")
+            return (
+                status == "downloaded"
+                and isinstance(local_path, str)
+                and (self.output_dir / local_path).is_file()
+            )
         if status in {"no_image", "not_public_domain", "not_downloadable"}:
             return True
         local_path = image.get("local_path")
@@ -497,8 +512,13 @@ class DatasetStorage:
         state["last_summary"] = summary
         self.write_json(path, state)
 
-    def rebuild_metadata(self) -> int:
-        """Rebuild metadata.jsonl and metadata.csv, returning the record count."""
+    def rebuild_metadata(
+        self,
+        *,
+        require_image: bool = False,
+        require_description: bool = False,
+    ) -> int:
+        """Rebuild exports, optionally enforcing strict training-record requirements."""
         records: list[dict[str, Any]] = []
         source_directories = (
             [path for path in self.records_dir.iterdir() if path.is_dir()]
@@ -511,6 +531,22 @@ class DatasetStorage:
                     value = self.read_json(path)
                 except (OSError, ValueError, json.JSONDecodeError) as error:
                     raise ValueError(f"cannot rebuild metadata: invalid record file {path}") from error
+                image = value.get("image")
+                if require_image:
+                    local_path = image.get("local_path") if isinstance(image, dict) else None
+                    if (
+                        not isinstance(image, dict)
+                        or image.get("status") != "downloaded"
+                        or not isinstance(local_path, str)
+                        or not (self.output_dir / local_path).is_file()
+                    ):
+                        continue
+                if require_description and (
+                    value.get("description_status") != "available"
+                    or not isinstance(value.get("description"), str)
+                    or not value["description"].strip()
+                ):
+                    continue
                 records.append(value)
         records.sort(key=lambda record: str(record.get("record_id", "")))
         body = "".join(

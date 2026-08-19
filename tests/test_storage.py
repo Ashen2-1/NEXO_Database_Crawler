@@ -137,6 +137,49 @@ class StorageTests(unittest.TestCase):
             self.assertNotIn("constituents", row)
             self.assertNotIn("source_metadata", row)
 
+    def test_strict_rebuild_filters_exports_without_deleting_records(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            image_path = storage.image_path("example", "complete-primary", ".jpg")
+            image_path.write_bytes(b"image")
+            storage.write_json(
+                storage.record_path("example", "complete-primary"),
+                {
+                    "record_id": "example:complete:primary",
+                    "description": "Sourced description",
+                    "description_status": "available",
+                    "image": {
+                        "status": "downloaded",
+                        "local_path": storage.relative_path(image_path),
+                    },
+                },
+            )
+            storage.write_json(
+                storage.record_path("example", "incomplete-primary"),
+                {
+                    "record_id": "example:incomplete:primary",
+                    "description": None,
+                    "description_status": "no_source",
+                    "image": {"status": "no_image", "local_path": None},
+                },
+            )
+
+            self.assertEqual(
+                storage.rebuild_metadata(require_image=True, require_description=True),
+                1,
+            )
+            exported = [
+                json.loads(line)
+                for line in storage.metadata_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(
+                [record["record_id"] for record in exported],
+                ["example:complete:primary"],
+            )
+            self.assertTrue(storage.record_path("example", "incomplete-primary").exists())
+            self.assertEqual(storage.rebuild_metadata(), 2)
+
     def test_resume_check_requires_downloaded_image_file(self):
         with self.temporary_directory() as temporary_directory:
             storage = DatasetStorage(Path(temporary_directory))

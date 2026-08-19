@@ -39,6 +39,11 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", type=Path, default=Path("dataset"), help="dataset directory")
     parser.add_argument("--skip-images", action="store_true", help="save metadata without image files")
     parser.add_argument(
+        "--require-image",
+        action="store_true",
+        help="export only records whose image was successfully downloaded",
+    )
+    parser.add_argument(
         "--public-domain-only",
         action="store_true",
         help="keep only source objects explicitly marked public domain",
@@ -47,6 +52,11 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         "--enrich-descriptions",
         action="store_true",
         help="fetch optional source-grounded descriptions from adapter-supported sources",
+    )
+    parser.add_argument(
+        "--require-description",
+        action="store_true",
+        help="enrich descriptions and export only records with a non-empty sourced description",
     )
     parser.add_argument(
         "--force",
@@ -99,6 +109,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--retries must be zero or greater")
     if args.timeout == 0:
         parser.error("--timeout must be greater than zero")
+    if args.require_image and args.skip_images:
+        parser.error("--require-image cannot be combined with --skip-images")
+
+    enrich_descriptions = args.enrich_descriptions or args.require_description
 
     client = HttpClient(
         timeout=args.timeout,
@@ -172,8 +186,10 @@ def main(argv: list[str] | None = None) -> int:
         storage=storage,
         skip_images=args.skip_images,
         force=args.force,
-        enrich_descriptions=args.enrich_descriptions,
+        enrich_descriptions=enrich_descriptions,
         public_domain_only=args.public_domain_only,
+        require_image=args.require_image,
+        require_description=args.require_description,
         targets=tuple(getattr(args, "target", ()) or ()),
         refresh_after=refresh_state["started_at"] if refresh_state is not None else None,
     )
@@ -198,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{index}/{total}] {reference}: failed: {error}", file=sys.stderr)
         elif status == "filtered":
             if show_individual_skips:
-                print(f"[{index}/{total}] {reference}: filtered (target or rights rule)")
+                print(f"[{index}/{total}] {reference}: filtered (target, rights, or strict requirement)")
         elif status == "unchanged":
             print(f"[{index}/{total}] {reference}: checked, unchanged")
         elif status == "updated":
@@ -214,7 +230,10 @@ def main(argv: list[str] | None = None) -> int:
         on_progress=report_progress,
     )
 
-    metadata_count = storage.rebuild_metadata()
+    metadata_count = storage.rebuild_metadata(
+        require_image=args.require_image,
+        require_description=args.require_description,
+    )
     print(
         f"Done: {summary.completed} completed, {summary.skipped} skipped, "
         f"{summary.filtered} filtered, "

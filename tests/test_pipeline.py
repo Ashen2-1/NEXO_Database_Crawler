@@ -233,6 +233,101 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(storage.enrichment_path("example", "one").exists())
             self.assertTrue(pipeline.is_complete("one"))
 
+    def test_require_description_filters_missing_and_continues_to_limit(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+
+            def enrich(source_id, raw, client):
+                if source_id == "missing":
+                    return {"description_status": "no_source"}
+                return {
+                    "description_status": "available",
+                    "description": "Source-grounded description",
+                    "description_source": "example",
+                    "description_source_url": "https://example.test/entity/available",
+                    "description_language": "en",
+                }
+
+            adapter.enrich = enrich
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=FakeClient(),
+                storage=storage,
+                skip_images=False,
+                force=False,
+                require_description=True,
+            )
+
+            summary = pipeline.crawl_many(["missing", "available"], max_new=1)
+
+            self.assertTrue(pipeline.enrich_descriptions)
+            self.assertEqual(summary.filtered, 1)
+            self.assertEqual(summary.completed, 1)
+            self.assertFalse(storage.record_path("example", "missing-primary").exists())
+            record = storage.read_json(storage.record_path("example", "available-primary"))
+            self.assertEqual(record["description_status"], "available")
+
+    def test_require_image_filters_missing_and_continues_to_limit(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+
+            def image_candidates(source_id, raw):
+                return [
+                    ImageCandidate(
+                        key="primary",
+                        role="primary",
+                        source_url=(
+                            None
+                            if source_id == "missing"
+                            else "https://example.test/available.jpg"
+                        ),
+                        download_allowed=True,
+                    )
+                ]
+
+            adapter.image_candidates = image_candidates
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=FakeClient(),
+                storage=storage,
+                skip_images=False,
+                force=False,
+                require_image=True,
+            )
+
+            summary = pipeline.crawl_many(["missing", "available"], max_new=1)
+
+            self.assertEqual(summary.filtered, 1)
+            self.assertEqual(summary.completed, 1)
+            self.assertFalse(storage.record_path("example", "missing-primary").exists())
+            record = storage.read_json(storage.record_path("example", "available-primary"))
+            self.assertEqual(record["image"]["status"], "downloaded")
+            self.assertTrue(
+                storage.record_is_complete(
+                    storage.record_path("example", "available-primary"),
+                    skip_images=False,
+                    require_image=True,
+                )
+            )
+
+    def test_require_image_rejects_skip_images_defensively(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            with self.assertRaisesRegex(ValueError, "cannot be combined"):
+                CrawlPipeline(
+                    adapter=FakeAdapter(),
+                    client=FakeClient(),
+                    storage=storage,
+                    skip_images=True,
+                    force=False,
+                    require_image=True,
+                )
+
     def test_blocked_image_status_takes_precedence_over_missing_url(self):
         with self.temporary_directory() as temporary_directory:
             storage = DatasetStorage(Path(temporary_directory))

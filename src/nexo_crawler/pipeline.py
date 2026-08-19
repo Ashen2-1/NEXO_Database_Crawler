@@ -48,6 +48,8 @@ class CrawlPipeline:
         force: bool,
         enrich_descriptions: bool = False,
         public_domain_only: bool = False,
+        require_image: bool = False,
+        require_description: bool = False,
         targets: tuple[str, ...] = (),
         refresh_after: str | None = None,
     ) -> None:
@@ -57,8 +59,12 @@ class CrawlPipeline:
         self.storage = storage
         self.skip_images = skip_images
         self.force = force
-        self.enrich_descriptions = enrich_descriptions
+        if require_image and skip_images:
+            raise ValueError("require_image cannot be combined with skip_images")
+        self.enrich_descriptions = enrich_descriptions or require_description
         self.public_domain_only = public_domain_only
+        self.require_image = require_image
+        self.require_description = require_description
         self.targets = targets
         self.refresh_after = refresh_after
 
@@ -71,6 +77,8 @@ class CrawlPipeline:
             self.skip_images,
             checked_after=self.refresh_after,
             require_description_enrichment=self.enrich_descriptions,
+            require_image=self.require_image,
+            require_description=self.require_description,
         )
 
     def is_complete(self, source_id: str) -> bool:
@@ -252,6 +260,22 @@ class CrawlPipeline:
                 return "filtered"
 
             enrichment = self._load_enrichment(source_id, raw)
+            if self.require_description and (
+                enrichment.get("description_status") != "available"
+                or not isinstance(enrichment.get("description"), str)
+                or not enrichment["description"].strip()
+            ):
+                self.storage.append_manifest(
+                    {
+                        "timestamp": utc_now(),
+                        "source": self.adapter.source_key,
+                        "source_object_id": source_id,
+                        "source_api_url": source_api_url,
+                        "status": "filtered_missing_required_description",
+                        "description_status": enrichment.get("description_status"),
+                    }
+                )
+                return "filtered"
             candidates = self.adapter.image_candidates(source_id, raw)
 
             if old_raw is None:
@@ -267,6 +291,7 @@ class CrawlPipeline:
                 raise ValueError(f"{self.adapter.display_reference(source_id)} produced no image samples")
 
             image_statuses: list[str] = []
+            accepted_images = 0
             for candidate in candidates:
                 identity = self.adapter.identity(source_id, candidate)
                 record_path = self.storage.record_path(self.adapter.source_key, identity.file_stem)
@@ -277,17 +302,23 @@ class CrawlPipeline:
                         record_path,
                         self.skip_images,
                         require_description_enrichment=self.enrich_descriptions,
+                        require_image=self.require_image,
+                        require_description=self.require_description,
                     )
                 ):
                     existing = self.storage.read_json(record_path)
                     existing_image = existing.get("image")
                     if isinstance(existing_image, dict) and isinstance(existing_image.get("status"), str):
                         image_statuses.append(existing_image["status"])
+                        accepted_images += 1
                     continue
 
                 image = self._reuse_existing_image(source_id, candidate)
                 if image is None:
                     image = self._download_image(source_id, candidate)
+                image_statuses.append(image.status)
+                if self.require_image and image.status != "downloaded":
+                    continue
                 context = NormalizationContext(
                     identity=identity,
                     retrieved_at=retrieved_at,
@@ -298,7 +329,20 @@ class CrawlPipeline:
                 )
                 record = self.adapter.normalize(source_id, raw, context)
                 self.storage.write_json(record_path, record.to_dict())
-                image_statuses.append(image.status)
+                accepted_images += 1
+
+            if self.require_image and accepted_images == 0:
+                self.storage.append_manifest(
+                    {
+                        "timestamp": utc_now(),
+                        "source": self.adapter.source_key,
+                        "source_object_id": source_id,
+                        "source_api_url": source_api_url,
+                        "status": "filtered_missing_required_image",
+                        "image_statuses": image_statuses,
+                    }
+                )
+                return "filtered"
 
             self.storage.append_manifest(
                 {

@@ -116,7 +116,7 @@ known empty lists are `[]`. Empty strings are not used as substitutes for missin
     "note": "No AI-generated or human-inferred annotations were added."
   },
   "source_metadata": {},
-  "crawler_version": "0.4.0"
+  "crawler_version": "0.5.0"
 }
 ```
 
@@ -166,7 +166,8 @@ keeps `dimensions`; JSONL retains both.
 CSV quoting is handled automatically, including commas, quotation marks, Unicode text, and
 newlines inside descriptions. Training code should normally keep rows where
 `image_status == "downloaded"`; rows without downloadable images remain in both metadata exports
-so the source crawl stays complete and auditable.
+so the source crawl stays complete and auditable. Alternatively, use the strict `--require-image`
+and `--require-description` export requirements documented below.
 
 ## Output layout
 
@@ -518,6 +519,67 @@ not fabricate missing descriptions. Use `description_status == "available"` to s
 rows; keep the status columns so training code can distinguish missing source data from a run that
 did not request enrichment.
 
+### Strict image and description requirements
+
+Use `--require-image` when every exported training row must have an image that was successfully
+downloaded and still exists locally:
+
+```powershell
+python crawler.py metmuseum --target person --require-image --limit 150
+```
+
+This is stricter than Met search's `hasImages=true`. A candidate is accepted only when its final
+canonical image has all of the following:
+
+- `image_status == "downloaded"`;
+- a non-empty dataset-relative `image` / `image.local_path`;
+- an actual file at that local path when the export is rebuilt.
+
+Candidates with `no_image`, `not_public_domain`, `not_downloadable`, or `skipped` image status are
+filtered and do not consume `--limit`. `--require-image` cannot be combined with `--skip-images`.
+For the Met adapter, non-public-domain images are never downloaded, so they also cannot satisfy
+`--require-image`; `--public-domain-only` is still recommended to state the rights policy
+explicitly and filter such objects earlier.
+
+Use `--require-description` when every exported row must contain a non-empty, source-grounded
+description:
+
+```powershell
+python crawler.py metmuseum --target person --require-description --limit 150
+```
+
+`--require-description` automatically enables the same exact-entity Wikidata lookup as
+`--enrich-descriptions`. A candidate is accepted only when:
+
+- `description_status == "available"`; and
+- `description` is a non-empty string after whitespace is removed.
+
+Therefore `no_source`, `not_available`, `not_requested`, and empty descriptions are filtered and do
+not consume `--limit`. This option requires source availability; it does not generate missing text
+with AI.
+
+Use both strict requirements for a training export in which every row has both artifacts:
+
+```powershell
+python crawler.py metmuseum --target person --limit 150 `
+  --public-domain-only --require-image --require-description `
+  --output dataset_targeted
+```
+
+Strict requirements affect two layers:
+
+1. During crawling, candidates that fail a requirement are recorded in `crawl_manifest.jsonl` as
+   `filtered_missing_required_image` or `filtered_missing_required_description`; they do not count
+   toward `--limit` and do not create a new canonical record.
+2. When `metadata.jsonl` and `metadata.csv` are rebuilt, every existing record under `records/` is
+   checked again. Records that do not satisfy the active strict requirements are excluded from that
+   run's exports, even if they were created by an older non-strict run.
+
+Strict export does not delete older `records/`, `raw/`, enrichment caches, or image files. This
+preserves crawl provenance and makes the operation reversible. Running a later command without the
+strict flags rebuilds the exports without those strict filters. For a permanently strict standalone
+dataset, consistently use the same flags and output directory on every continuation run.
+
 ### Force a refresh
 
 Normally complete records are reused. `--force` creates a resumable refresh job, fetches and
@@ -561,8 +623,10 @@ Available common options are:
 | `--limit` | `100` | Maximum objects requiring work attempted in this run |
 | `--output` | `dataset` | Dataset output directory |
 | `--skip-images` | off | Save source metadata without image files |
+| `--require-image` | off | Export only rows with a successfully downloaded local image |
 | `--public-domain-only` | off | Exclude objects not explicitly marked public domain |
 | `--enrich-descriptions` | off | Fetch exact-entity source descriptions when supported |
+| `--require-description` | off | Enrich, then export only rows with a non-empty sourced description |
 | `--force` | off | Refresh metadata and download images again in a resumable job |
 | `--timeout` | `30` | Per-request timeout in seconds |
 | `--retries` | `3` | Retries for temporary HTTP failures |
@@ -604,6 +668,7 @@ The CLI rejects ambiguous or unsupported combinations:
 - `--department-id` without `--query` or `--all`;
 - more than one `--department-id` in query mode;
 - `--include-results-without-images` without `--query`;
+- `--require-image` with `--skip-images`;
 - `--target` combined with IDs, `--query`, `--all`, departments, update dates, or image overrides;
 - zero or negative limits, timeouts, department IDs, or object IDs.
 
