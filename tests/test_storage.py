@@ -233,6 +233,58 @@ class StorageTests(unittest.TestCase):
             ]
             self.assertEqual([record["record_id"] for record in exported], ["example:inside:primary"])
 
+    def test_target_filter_excludes_old_records_and_removes_legacy_csv(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            storage.write_json(
+                storage.record_path("example", "person"),
+                {
+                    "record_id": "example:person:primary",
+                    "target_person": True,
+                    "target_architecture": False,
+                },
+            )
+            storage.write_json(
+                storage.record_path("example", "architecture"),
+                {
+                    "record_id": "example:architecture:primary",
+                    "target_person": False,
+                    "target_architecture": True,
+                },
+            )
+            storage.legacy_metadata_csv_path.write_text("stale,data\n", encoding="utf-8")
+
+            self.assertEqual(storage.rebuild_metadata(targets=("person",)), 1)
+            with storage.metadata_csv_path.open(encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+
+            self.assertEqual([row["record_id"] for row in rows], ["example:person:primary"])
+            self.assertFalse(storage.legacy_metadata_csv_path.exists())
+
+    def test_resume_check_reapplies_target_filter(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            record_path = storage.record_path("example", "architecture")
+            storage.write_json(
+                record_path,
+                {
+                    "schema_version": "2.2",
+                    "target_person": False,
+                    "target_architecture": True,
+                    "image": {"status": "no_image", "local_path": None},
+                },
+            )
+
+            self.assertFalse(
+                storage.record_is_complete(
+                    record_path,
+                    skip_images=False,
+                    targets=("person",),
+                )
+            )
+
     def test_resume_check_requires_downloaded_image_file(self):
         with self.temporary_directory() as temporary_directory:
             storage = DatasetStorage(Path(temporary_directory))

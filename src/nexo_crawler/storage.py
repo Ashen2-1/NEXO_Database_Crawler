@@ -256,10 +256,16 @@ def record_matches_export_filters(
     require_creator: bool = False,
     year_from: int | None = None,
     year_to: int | None = None,
+    targets: tuple[str, ...] = (),
 ) -> bool:
     """Apply reusable content filters to a canonical record."""
-    return (not require_creator or record_has_creator_name(record)) and record_matches_year_range(
-        record, year_from, year_to
+    matches_target = not targets or any(
+        record.get(f"target_{target}") is True for target in targets
+    )
+    return (
+        matches_target
+        and (not require_creator or record_has_creator_name(record))
+        and record_matches_year_range(record, year_from, year_to)
     )
 
 
@@ -448,6 +454,7 @@ class DatasetStorage:
         self.metadata_path = output_dir / "metadata.jsonl"
         self.metadata_csv_path = output_dir / "metadata_full.csv"
         self.ai_metadata_csv_path = output_dir / "metadata_ai.csv"
+        self.legacy_metadata_csv_path = output_dir / "metadata.csv"
         self.manifest_path = output_dir / "crawl_manifest.jsonl"
 
     def prepare(self, source_key: str) -> None:
@@ -530,6 +537,7 @@ class DatasetStorage:
         require_creator: bool = False,
         year_from: int | None = None,
         year_to: int | None = None,
+        targets: tuple[str, ...] = (),
     ) -> bool:
         """Return whether an existing record satisfies resume/skip criteria."""
         if not record_path.exists():
@@ -554,6 +562,7 @@ class DatasetStorage:
             require_creator=require_creator,
             year_from=year_from,
             year_to=year_to,
+            targets=targets,
         ):
             return False
 
@@ -640,6 +649,7 @@ class DatasetStorage:
         require_creator: bool = False,
         year_from: int | None = None,
         year_to: int | None = None,
+        targets: tuple[str, ...] = (),
     ) -> int:
         """Rebuild exports, optionally enforcing strict training-record requirements."""
         records: list[dict[str, Any]] = []
@@ -675,6 +685,7 @@ class DatasetStorage:
                     require_creator=require_creator,
                     year_from=year_from,
                     year_to=year_to,
+                    targets=targets,
                 ):
                     continue
                 records.append(value)
@@ -699,4 +710,6 @@ class DatasetStorage:
             for row in (record_to_csv_row(record) for record in records)
         )
         atomic_write_bytes(self.ai_metadata_csv_path, ai_csv_body.getvalue().encode("utf-8"))
+        if self.legacy_metadata_csv_path.exists():
+            self.legacy_metadata_csv_path.unlink()
         return len(records)

@@ -5,7 +5,7 @@ import unittest
 import urllib.error
 from pathlib import Path
 
-from nexo_crawler.http import HttpResponse
+from nexo_crawler.http import HttpAccessBlockedError, HttpResponse
 from nexo_crawler.models import CanonicalRecord, CreationDateInfo, CreatorInfo, SourceInfo
 from nexo_crawler.pipeline import CrawlPipeline, utc_now
 from nexo_crawler.sources.base import (
@@ -409,6 +409,32 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(summary.attempted, 3)
             self.assertEqual(summary.examined, 3)
             self.assertTrue(summary.limit_reached)
+            self.assertFalse(storage.raw_path("example", "not-examined").exists())
+
+    def test_repeated_403_halts_run_instead_of_filtering_remaining_candidates(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+
+            def fetch(source_id, client):
+                raise HttpAccessBlockedError(f"https://api.example.test/{source_id}", 4)
+
+            adapter.fetch = fetch
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=FakeClient(),
+                storage=storage,
+                skip_images=False,
+                force=False,
+            )
+
+            summary = pipeline.crawl_many(["blocked", "not-examined"], max_new=1)
+
+            self.assertTrue(summary.halted)
+            self.assertEqual(summary.failed, 1)
+            self.assertEqual(summary.filtered, 0)
+            self.assertEqual(summary.examined, 1)
             self.assertFalse(storage.raw_path("example", "not-examined").exists())
 
     def test_max_examined_stops_before_success_target(self):

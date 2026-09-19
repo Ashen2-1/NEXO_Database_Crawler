@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
-from .http import HttpClient
+from .http import HttpAccessBlockedError, HttpClient
 from .models import ImageInfo
 from .sources.base import ImageCandidate, NormalizationContext, SourceAdapter
 from .storage import (
@@ -35,11 +35,14 @@ class CrawlSummary:
     created: int
     updated: int
     unchanged: int
+    completed_from_cache: int
     skipped: int
     filtered: int
     failed: int
     limit_reached: bool
     max_examined_reached: bool
+    halted: bool
+    halt_reason: str | None
 
 
 ProgressCallback = Callable[[int, int, str, str, Exception | None], None]
@@ -96,6 +99,7 @@ class CrawlPipeline:
             require_creator=self.require_creator,
             year_from=self.year_from,
             year_to=self.year_to,
+            targets=self.targets,
         )
 
     def is_complete(self, source_id: str) -> bool:
@@ -328,6 +332,7 @@ class CrawlPipeline:
                     require_creator=self.require_creator,
                     year_from=self.year_from,
                     year_to=self.year_to,
+                    targets=self.targets,
                 ):
                     missing_creator = self.require_creator and not record_has_creator_name(preview)
                     outside_year_range = not record_matches_year_range(
@@ -373,6 +378,7 @@ class CrawlPipeline:
                         require_creator=self.require_creator,
                         year_from=self.year_from,
                         year_to=self.year_to,
+                        targets=self.targets,
                     )
                 ):
                     existing = self.storage.read_json(record_path)
@@ -425,8 +431,21 @@ class CrawlPipeline:
                 }
             )
             return change_status
+        except HttpAccessBlockedError as error:
+            self.storage.append_manifest(
+                {
+                    "timestamp": utc_now(),
+                    "source": self.adapter.source_key,
+                    "source_object_id": source_id,
+                    "source_api_url": source_api_url,
+                    "status": "failed_source_access_blocked",
+                    "http_status": 403,
+                    "error": str(error),
+                }
+            )
+            raise
         except urllib.error.HTTPError as error:
-            if error.code in {403, 404}:
+            if error.code == 404:
                 self.storage.append_manifest(
                     {
                         "timestamp": utc_now(),
@@ -439,6 +458,20 @@ class CrawlPipeline:
                     }
                 )
                 return "filtered"
+            if error.code == 403:
+                blocked_error = HttpAccessBlockedError(source_api_url or "unknown source URL", 1)
+                self.storage.append_manifest(
+                    {
+                        "timestamp": utc_now(),
+                        "source": self.adapter.source_key,
+                        "source_object_id": source_id,
+                        "source_api_url": source_api_url,
+                        "status": "failed_source_access_blocked",
+                        "http_status": 403,
+                        "error": str(error),
+                    }
+                )
+                raise blocked_error from error
             self.storage.append_manifest(
                 {
                     "timestamp": utc_now(),
@@ -479,6 +512,7 @@ class CrawlPipeline:
         created = 0
         updated = 0
         unchanged = 0
+        completed_from_cache = 0
         skipped = 0
         filtered = 0
         failed = 0
@@ -486,6 +520,8 @@ class CrawlPipeline:
         examined = 0
         limit_reached = False
         max_examined_reached = False
+        halted = False
+        halt_reason: str | None = None
 
         for position, source_id in enumerate(ids, 1):
             if completed >= max_new:
@@ -515,8 +551,17 @@ class CrawlPipeline:
                         updated += 1
                     elif result == "unchanged":
                         unchanged += 1
+                    elif result == "completed":
+                        completed_from_cache += 1
                 if on_progress is not None:
                     on_progress(position, len(ids), source_id, result, None)
+            except HttpAccessBlockedError as error:
+                failed += 1
+                halted = True
+                halt_reason = str(error)
+                if on_progress is not None:
+                    on_progress(position, len(ids), source_id, "failed", error)
+                break
             except Exception as error:
                 failed += 1
                 if on_progress is not None:
@@ -530,9 +575,12 @@ class CrawlPipeline:
             created=created,
             updated=updated,
             unchanged=unchanged,
+            completed_from_cache=completed_from_cache,
             skipped=skipped,
             filtered=filtered,
             failed=failed,
             limit_reached=limit_reached,
             max_examined_reached=max_examined_reached,
+            halted=halted,
+            halt_reason=halt_reason,
         )

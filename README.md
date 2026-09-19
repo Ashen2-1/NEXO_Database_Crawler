@@ -143,6 +143,8 @@ cells.
 
 `constituent_genders` is not exported in either table. Other common and Met-provided values remain
 available in the full table, and the lossless nested source structures remain in JSON.
+The obsolete pre-split `metadata.csv` is removed whenever exports are rebuilt, so it cannot be
+mistaken for either current table.
 
 Description provenance is explicit in `description_status`, `description_source`,
 `description_source_url`, and `description_language`. `description_status` is one of:
@@ -608,8 +610,9 @@ Strict requirements affect two layers:
    `filtered_missing_creator`, or `filtered_creation_year`; they do not count toward `--limit` and
    do not create a new canonical record.
 2. When `metadata.jsonl`, `metadata_full.csv`, and `metadata_ai.csv` are rebuilt, every existing
-   record under `records/` is checked again. Records that do not satisfy the active requirements are
-   excluded from that run's exports, even if they were created by an older non-strict run.
+   record under `records/` is checked again. Active thematic targets such as `--target person` are
+   reapplied along with the year, creator, image, and description requirements. Records that do not
+   satisfy the current command are excluded even if an older run created them for another target.
 
 Strict export does not delete older `records/`, `raw/`, enrichment caches, or image files. This
 preserves crawl provenance and makes the operation reversible. Running a later command without the
@@ -643,8 +646,14 @@ python crawler.py metmuseum --object-id 437329 --timeout 60
 Change retry count and polite delay between requests:
 
 ```powershell
-python crawler.py metmuseum --all --limit 500 --retries 5 --request-delay 0.5
+python crawler.py metmuseum --all --limit 500 --retries 5 --request-delay 1.5
 ```
+
+HTTP 403 is treated as a potentially temporary source-wide block rather than as a filtered object.
+The client retries it with stronger exponential backoff. If access remains blocked after all
+retries, the run stops instead of sending hundreds of additional requests; rerun later, preferably
+with a larger delay such as `--request-delay 2.0`. HTTP 404 remains an object-level unavailable
+candidate and is filtered without consuming the success target.
 
 Provide a custom User-Agent:
 
@@ -670,7 +679,7 @@ Available common options are:
 | `--force` | off | Refresh metadata and download images again in a resumable job |
 | `--timeout` | `30` | Per-request timeout in seconds |
 | `--retries` | `3` | Retries for temporary HTTP failures |
-| `--request-delay` | `0.25` | Minimum seconds between requests |
+| `--request-delay` | `1.0` | Minimum seconds between requests; raised to at least 1.0 after a recovered 403 |
 | `--user-agent` | NEXO default | HTTP User-Agent header |
 
 Run `python crawler.py --help` for source selection help, or
@@ -681,6 +690,10 @@ Run `python crawler.py --help` for source selection help, or
 Complete records are skipped on later ordinary runs. Raw responses cached before an interrupted
 image download are reused, and `metadata.jsonl`, `metadata_full.csv`, plus `metadata_ai.csv` are
 rebuilt from individual record files so they do not accumulate duplicate rows.
+
+The run summary separates successful work performed in the current invocation, records that were
+already complete, and the final export row count. These numbers are intentionally different when
+the output directory already contains reusable records.
 
 When the canonical schema version changes, older records are treated as incomplete and normalized
 again from their cached `raw/` response. An unchanged downloaded image is reused, so a schema

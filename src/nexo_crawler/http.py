@@ -11,7 +11,18 @@ from typing import Any
 
 
 DEFAULT_USER_AGENT = "NEXO-Database-Crawler/0.5 (source-grounded research dataset)"
-RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
+
+
+class HttpAccessBlockedError(RuntimeError):
+    """Raised after repeated HTTP 403 responses indicate source-wide access blocking."""
+
+    def __init__(self, url: str, attempts: int) -> None:
+        self.url = url
+        self.attempts = attempts
+        super().__init__(
+            f"source access remained blocked with HTTP 403 after {attempts} attempt(s): {url}"
+        )
 
 
 @dataclass(frozen=True)
@@ -34,6 +45,7 @@ class HttpClient:
         self.timeout = timeout
         self.retries = retries
         self.request_delay = request_delay
+        self._effective_request_delay = request_delay
         self.user_agent = user_agent
         self._last_request_started: float | None = None
 
@@ -41,13 +53,14 @@ class HttpClient:
         """Sleep until the minimum delay since the last request has elapsed."""
         if self._last_request_started is not None:
             elapsed = time.monotonic() - self._last_request_started
-            if elapsed < self.request_delay:
-                time.sleep(self.request_delay - elapsed)
+            if elapsed < self._effective_request_delay:
+                time.sleep(self._effective_request_delay - elapsed)
         self._last_request_started = time.monotonic()
 
     def get(self, url: str) -> HttpResponse:
         """Fetch a URL with throttling and retries for transient HTTP/network errors."""
         last_error: Exception | None = None
+        saw_access_block = False
         for attempt in range(self.retries + 1):
             self._throttle()
             request = urllib.request.Request(
@@ -59,6 +72,8 @@ class HttpClient:
             )
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    if saw_access_block:
+                        self._effective_request_delay = max(self._effective_request_delay, 1.0)
                     return HttpResponse(
                         data=response.read(),
                         content_type=response.headers.get_content_type(),
@@ -66,10 +81,21 @@ class HttpClient:
                     )
             except urllib.error.HTTPError as error:
                 last_error = error
+                if error.code == 403:
+                    saw_access_block = True
+                if error.code == 403 and attempt >= self.retries:
+                    raise HttpAccessBlockedError(url, attempt + 1) from error
                 if error.code not in RETRYABLE_STATUS_CODES or attempt >= self.retries:
                     raise
-                retry_after = error.headers.get("Retry-After")
-                delay = float(retry_after) if retry_after and retry_after.isdigit() else 2**attempt
+                retry_after = (
+                    error.headers.get("Retry-After") if error.headers is not None else None
+                )
+                if retry_after and retry_after.isdigit():
+                    delay = float(retry_after)
+                elif error.code == 403:
+                    delay = 5 * (2**attempt)
+                else:
+                    delay = 2**attempt
                 time.sleep(min(delay, 30.0))
             except (urllib.error.URLError, TimeoutError) as error:
                 last_error = error

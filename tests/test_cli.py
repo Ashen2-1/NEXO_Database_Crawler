@@ -23,6 +23,7 @@ class CliTests(unittest.TestCase):
         args = build_parser().parse_args(["metmuseum", "--object-id", "42"])
         self.assertEqual(args.source, "metmuseum")
         self.assertEqual(args.object_id, ["42"])
+        self.assertEqual(args.request_delay, 1.0)
 
     def test_parser_accepts_strict_requirements(self):
         args = build_parser().parse_args(

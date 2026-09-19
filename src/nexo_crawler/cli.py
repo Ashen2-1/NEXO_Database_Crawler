@@ -88,8 +88,8 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--request-delay",
         type=nonnegative_float,
-        default=0.25,
-        help="minimum seconds between requests (default: 0.25)",
+        default=1.0,
+        help="minimum seconds between requests (default: 1.0)",
     )
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT, help="HTTP User-Agent string")
 
@@ -266,23 +266,27 @@ def main(argv: list[str] | None = None) -> int:
         require_creator=args.require_creator,
         year_from=args.year_from,
         year_to=args.year_to,
+        targets=tuple(getattr(args, "target", ()) or ()),
     )
     print(
-        f"Done: {summary.completed} completed, {summary.skipped} skipped, "
-        f"{summary.filtered} filtered, "
-        f"{summary.failed} failed; "
-        f"metadata.jsonl, metadata_full.csv, and metadata_ai.csv contain "
-        f"{metadata_count} record(s)."
+        f"Run results: {summary.completed} successful this run, "
+        f"{summary.skipped} already complete, {summary.filtered} filtered, "
+        f"{summary.failed} failed."
     )
-    if summary.completed:
-        print(
-            f"Changes: {summary.created} created, {summary.updated} updated, "
-            f"{summary.unchanged} unchanged."
-        )
+    print(
+        f"Successful work: {summary.created} newly created, "
+        f"{summary.completed_from_cache} completed from cached source data, "
+        f"{summary.updated} updated, {summary.unchanged} checked unchanged."
+    )
+    print(
+        f"Export results: metadata.jsonl, metadata_full.csv, and metadata_ai.csv "
+        f"contain {metadata_count} record(s)."
+    )
     if refresh_path is not None:
         refresh_completed = (
             not summary.limit_reached
             and not summary.max_examined_reached
+            and not summary.halted
             and summary.failed == 0
         )
         storage.update_refresh_job(
@@ -296,16 +300,25 @@ def main(argv: list[str] | None = None) -> int:
                 "created": summary.created,
                 "updated": summary.updated,
                 "unchanged": summary.unchanged,
+                "completed_from_cache": summary.completed_from_cache,
                 "skipped": summary.skipped,
                 "filtered": summary.filtered,
                 "failed": summary.failed,
                 "limit_reached": summary.limit_reached,
                 "max_examined_reached": summary.max_examined_reached,
+                "halted": summary.halted,
+                "halt_reason": summary.halt_reason,
             },
         )
         print(f"Refresh job status: {'completed' if refresh_completed else 'in progress'}.")
     if summary.completed >= args.limit:
         print(f"Success target reached: {summary.completed}/{args.limit}.")
+    elif summary.halted:
+        print(
+            f"Success target not reached: {summary.completed}/{args.limit}; "
+            "the run stopped after repeated HTTP 403 responses from the source."
+        )
+        print("Wait before resuming and consider a larger --request-delay (for example, 2.0).")
     elif summary.max_examined_reached:
         print(
             f"Success target not reached: {summary.completed}/{args.limit}; "
