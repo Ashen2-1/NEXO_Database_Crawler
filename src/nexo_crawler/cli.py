@@ -28,13 +28,18 @@ def nonnegative_float(value: str) -> float:
     return parsed
 
 
+def additional_records_needed(dataset_target: int, qualifying_count: int) -> int:
+    """Return how many more qualifying records are needed to reach the final dataset target."""
+    return max(dataset_target - qualifying_count, 0)
+
+
 def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     """Register shared crawl options (limits, output path, HTTP settings) on a subparser."""
     parser.add_argument(
         "--limit",
         type=positive_int,
         default=100,
-        help="target number of successful source objects for this run (default: 100)",
+        help="minimum target number of qualifying records in the final export (default: 100)",
     )
     parser.add_argument(
         "--max-examined",
@@ -158,6 +163,15 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = args.output.resolve()
     storage = DatasetStorage(output_dir)
     storage.prepare(adapter.source_key)
+    targets = tuple(getattr(args, "target", ()) or ())
+    export_requirements = {
+        "require_image": args.require_image,
+        "require_description": args.require_description,
+        "require_creator": args.require_creator,
+        "year_from": args.year_from,
+        "year_to": args.year_to,
+        "targets": targets,
+    }
     discovery_path = storage.write_discovery(
         adapter.source_key,
         {
@@ -218,13 +232,16 @@ def main(argv: list[str] | None = None) -> int:
         require_creator=args.require_creator,
         year_from=args.year_from,
         year_to=args.year_to,
-        targets=tuple(getattr(args, "target", ()) or ()),
+        targets=targets,
         refresh_after=refresh_state["started_at"] if refresh_state is not None else None,
     )
+    existing_qualifying_count = storage.count_matching_records(**export_requirements)
+    remaining_target = additional_records_needed(args.limit, existing_qualifying_count)
     safety_cap = f" (examining at most {args.max_examined})" if args.max_examined else ""
     print(
-        f"Targeting {args.limit} successful object(s) from {adapter.source_name} "
-        f"into {output_dir}{safety_cap}"
+        f"Dataset target: {args.limit} qualifying record(s); "
+        f"{existing_qualifying_count} already qualify, "
+        f"up to {remaining_target} additional record(s) needed{safety_cap}."
     )
     show_individual_skips = len(discovery.source_ids) <= 100
 
@@ -255,19 +272,12 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = pipeline.crawl_many(
         discovery.source_ids,
-        max_new=args.limit,
+        max_new=remaining_target,
         max_examined=args.max_examined,
         on_progress=report_progress,
     )
 
-    metadata_count = storage.rebuild_metadata(
-        require_image=args.require_image,
-        require_description=args.require_description,
-        require_creator=args.require_creator,
-        year_from=args.year_from,
-        year_to=args.year_to,
-        targets=tuple(getattr(args, "target", ()) or ()),
-    )
+    metadata_count = storage.rebuild_metadata(**export_requirements)
     print(
         f"Run results: {summary.completed} successful this run, "
         f"{summary.skipped} already complete, {summary.filtered} filtered, "
@@ -281,6 +291,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Export results: metadata.jsonl, metadata_full.csv, and metadata_ai.csv "
         f"contain {metadata_count} record(s)."
+    )
+    print(
+        f"Dataset progress: {existing_qualifying_count} qualifying before this run, "
+        f"{summary.completed} newly qualified this run, {metadata_count} in the final export."
     )
     if refresh_path is not None:
         refresh_completed = (
@@ -308,27 +322,28 @@ def main(argv: list[str] | None = None) -> int:
                 "max_examined_reached": summary.max_examined_reached,
                 "halted": summary.halted,
                 "halt_reason": summary.halt_reason,
+                "dataset_target": args.limit,
+                "qualifying_before_run": existing_qualifying_count,
+                "final_export_count": metadata_count,
             },
         )
         print(f"Refresh job status: {'completed' if refresh_completed else 'in progress'}.")
-    if summary.completed >= args.limit:
-        print(f"Success target reached: {summary.completed}/{args.limit}.")
+    if metadata_count >= args.limit:
+        print(f"Dataset target reached: {metadata_count}/{args.limit}.")
     elif summary.halted:
         print(
-            f"Success target not reached: {summary.completed}/{args.limit}; "
+            f"Dataset target not reached: {metadata_count}/{args.limit}; "
             "the run stopped after repeated HTTP 403 responses from the source."
         )
         print("Wait before resuming and consider a larger --request-delay (for example, 2.0).")
     elif summary.max_examined_reached:
         print(
-            f"Success target not reached: {summary.completed}/{args.limit}; "
+            f"Dataset target not reached: {metadata_count}/{args.limit}; "
             f"stopped after examining {summary.examined} candidate(s)."
         )
     else:
         print(
-            f"Success target not reached: {summary.completed}/{args.limit}; "
+            f"Dataset target not reached: {metadata_count}/{args.limit}; "
             "the discovered candidate list was exhausted."
         )
-    if summary.limit_reached:
-        print("Run the same command again to continue with the next incomplete objects.")
     return 1 if summary.failed else 0

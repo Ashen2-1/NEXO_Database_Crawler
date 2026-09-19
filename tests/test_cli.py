@@ -1,9 +1,19 @@
 import unittest
 
-from nexo_crawler.cli import _with_legacy_default_source, build_parser, main
+from nexo_crawler.cli import (
+    _with_legacy_default_source,
+    additional_records_needed,
+    build_parser,
+    main,
+)
 
 
 class CliTests(unittest.TestCase):
+    def test_existing_qualifying_records_reduce_final_dataset_target(self):
+        self.assertEqual(additional_records_needed(200, 21), 179)
+        self.assertEqual(additional_records_needed(200, 89), 111)
+        self.assertEqual(additional_records_needed(100, 120), 0)
+
     def test_old_style_command_defaults_to_metmuseum(self):
         self.assertEqual(
             _with_legacy_default_source(["--object-id", "42"]),

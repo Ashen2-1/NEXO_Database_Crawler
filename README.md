@@ -401,7 +401,7 @@ or `--include-results-without-images`.
 
 `--all` requests the Met `objects` endpoint and discovers the collection's available object IDs.
 It does not mean that every discovered object is processed in one invocation: the default
-`--limit 100` success target still applies.
+`--limit 100` final dataset target still applies.
 
 ```powershell
 python crawler.py metmuseum --all
@@ -465,26 +465,33 @@ missing, no longer matches the source URL, or `--force` was requested.
 
 ### Batch size and automatic continuation
 
-`--limit` is the target number of source objects that must complete successfully in the current
-run. Already-complete, filtered, and failed candidates do not consume this success quota. The
-crawler continues through the discovered candidate list until the target is reached or the list is
-exhausted. With the current Met adapter, one successful object produces one primary-image row.
+`--limit` is the minimum target number of qualifying records in the final export, not merely the
+amount of new work performed in one invocation. Before crawling, existing records are checked
+against every active target and strict requirement. Only the shortfall is requested from the
+pipeline. For example, if 21 records already qualify and `--limit 100` is requested, the crawler
+tries to complete up to 79 additional qualifying records.
+
+Already-complete records therefore count toward the dataset target. Filtered and failed candidates
+do not. The crawler continues through the discovered candidate list until the final dataset target
+is reached, `--max-examined` stops the run, source access is blocked, or the list is exhausted. With
+the current Met adapter, one successful object produces one primary-image row.
 
 ```powershell
 python crawler.py metmuseum --all --limit 500
 ```
 
 For restrictive filters, use the optional `--max-examined` safety cap to bound the number of
-candidates inspected while still treating `--limit` as the success target:
+candidates inspected while still treating `--limit` as the final dataset target:
 
 ```powershell
 python crawler.py metmuseum --target person --year-from 1800 --year-to 2000 `
   --require-creator --limit 100 --max-examined 5000
 ```
 
-The completion message reports whether the success target was reached, the candidate list was
-exhausted, or `--max-examined` stopped the run. A finite source may contain fewer qualifying
-objects than requested, so `--limit` cannot create records that do not exist upstream.
+The completion message reports the number qualifying before the run, newly qualifying during the
+run, the final export count, and whether the dataset target was reached. A finite source may contain
+fewer qualifying objects than requested, so `--limit` cannot create records that do not exist
+upstream.
 
 Run the same command again to continue. For example:
 
@@ -653,7 +660,7 @@ HTTP 403 is treated as a potentially temporary source-wide block rather than as 
 The client retries it with stronger exponential backoff. If access remains blocked after all
 retries, the run stops instead of sending hundreds of additional requests; rerun later, preferably
 with a larger delay such as `--request-delay 2.0`. HTTP 404 remains an object-level unavailable
-candidate and is filtered without consuming the success target.
+candidate and does not contribute to the final dataset target.
 
 Provide a custom User-Agent:
 
@@ -665,7 +672,7 @@ Available common options are:
 
 | Option | Default | Meaning |
 |---|---:|---|
-| `--limit` | `100` | Target number of successfully completed objects in this run |
+| `--limit` | `100` | Minimum target number of qualifying records in the final export |
 | `--max-examined` | none | Optional safety cap on all candidate objects examined |
 | `--output` | `dataset` | Dataset output directory |
 | `--skip-images` | off | Save source metadata without image files |

@@ -255,6 +255,7 @@ class StorageTests(unittest.TestCase):
             )
             storage.legacy_metadata_csv_path.write_text("stale,data\n", encoding="utf-8")
 
+            self.assertEqual(storage.count_matching_records(targets=("person",)), 1)
             self.assertEqual(storage.rebuild_metadata(targets=("person",)), 1)
             with storage.metadata_csv_path.open(encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))

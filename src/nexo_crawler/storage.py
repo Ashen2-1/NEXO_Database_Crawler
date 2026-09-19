@@ -641,7 +641,7 @@ class DatasetStorage:
         state["last_summary"] = summary
         self.write_json(path, state)
 
-    def rebuild_metadata(
+    def matching_records(
         self,
         *,
         require_image: bool = False,
@@ -650,8 +650,8 @@ class DatasetStorage:
         year_from: int | None = None,
         year_to: int | None = None,
         targets: tuple[str, ...] = (),
-    ) -> int:
-        """Rebuild exports, optionally enforcing strict training-record requirements."""
+    ) -> list[dict[str, Any]]:
+        """Load canonical records that satisfy the active export requirements."""
         records: list[dict[str, Any]] = []
         source_directories = (
             [path for path in self.records_dir.iterdir() if path.is_dir()]
@@ -690,6 +690,49 @@ class DatasetStorage:
                     continue
                 records.append(value)
         records.sort(key=lambda record: str(record.get("record_id", "")))
+        return records
+
+    def count_matching_records(
+        self,
+        *,
+        require_image: bool = False,
+        require_description: bool = False,
+        require_creator: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        targets: tuple[str, ...] = (),
+    ) -> int:
+        """Count records that would appear in exports without rewriting any files."""
+        return len(
+            self.matching_records(
+                require_image=require_image,
+                require_description=require_description,
+                require_creator=require_creator,
+                year_from=year_from,
+                year_to=year_to,
+                targets=targets,
+            )
+        )
+
+    def rebuild_metadata(
+        self,
+        *,
+        require_image: bool = False,
+        require_description: bool = False,
+        require_creator: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        targets: tuple[str, ...] = (),
+    ) -> int:
+        """Rebuild exports, optionally enforcing strict training-record requirements."""
+        records = self.matching_records(
+            require_image=require_image,
+            require_description=require_description,
+            require_creator=require_creator,
+            year_from=year_from,
+            year_to=year_to,
+            targets=targets,
+        )
         body = "".join(
             json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
             for record in records
