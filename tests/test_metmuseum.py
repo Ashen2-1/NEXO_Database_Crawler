@@ -10,9 +10,11 @@ class FakeJsonClient:
     def __init__(self, response):
         self.response = response
         self.url = None
+        self.urls = []
 
     def get_json(self, url):
         self.url = url
+        self.urls.append(url)
         return self.response
 
 
@@ -26,6 +28,7 @@ class MetMuseumAdapterTests(unittest.TestCase):
             "ids_file": None,
             "query": None,
             "target": [],
+            "person_scope": "standard",
             "all_objects": False,
             "department_id": [],
             "updated_since": None,
@@ -76,6 +79,32 @@ class MetMuseumAdapterTests(unittest.TestCase):
                 ("person",),
             )
         )
+
+    def test_broad_person_scope_adds_controlled_person_searches(self):
+        client = FakeJsonClient({"total": 2, "objectIDs": [4, 7]})
+        result = self.adapter.discover(
+            self.arguments(target=["person"], person_scope="broad"),
+            client,
+        )
+
+        self.assertEqual(result.source_ids, ["4", "7"])
+        self.assertEqual(result.parameters["person_scope"], "broad")
+        self.assertTrue(any("q=People" in url for url in client.urls))
+        self.assertTrue(any("q=Human+Figures" in url for url in client.urls))
+        self.assertTrue(any("q=Self-Portrait" in url for url in client.urls))
+        self.assertTrue(
+            all("isHighlight=true" in url for url in client.urls if "q=Men" in url)
+        )
+        self.assertTrue(
+            all("isHighlight=true" in url for url in client.urls if "q=Women" in url)
+        )
+
+    def test_broad_person_scope_requires_person_target(self):
+        with self.assertRaisesRegex(ValueError, "requires --target person"):
+            self.adapter.discover(
+                self.arguments(target=["architecture"], person_scope="broad"),
+                FakeJsonClient({}),
+            )
 
     def test_target_cannot_be_combined_with_query(self):
         with self.assertRaisesRegex(ValueError, "--target cannot be combined"):

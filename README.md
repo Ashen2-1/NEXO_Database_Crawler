@@ -323,6 +323,17 @@ Use `--target` to discover person, architecture, or painting candidates. Targets
 python crawler.py metmuseum --target person --target painting --limit 150
 ```
 
+Use the optional broad person scope when the portrait-focused candidate pool is too small:
+
+```powershell
+python crawler.py metmuseum --target person --person-scope broad --limit 200
+```
+
+`--person-scope broad` keeps the standard person searches and additionally searches `People`,
+`Human Figures`, `Boys`, `Girls`, `Children`, and `Self-Portrait`. It still applies the same
+source-metadata person validation to every fetched object. Use `--max-examined` to cap the work,
+because the broader search produces a substantially larger candidate list.
+
 For a training-ready public-domain image batch with source-grounded short descriptions:
 
 ```powershell
@@ -344,7 +355,8 @@ preserving the first-seen order, so highlight results are examined first.
 
 | Target | Candidate searches |
 |---|---|
-| `person` | `q=Portraits&isHighlight=true`; `q=Men&isHighlight=true`; `q=Women&isHighlight=true`; then the broader `q=Portraits` |
+| `person` (standard) | `q=Portraits&isHighlight=true`; `q=Men&isHighlight=true`; `q=Women&isHighlight=true`; then the broader `q=Portraits` |
+| `person` (`--person-scope broad`) | All standard searches, followed by `q=People`, `q=Human Figures`, `q=Boys`, `q=Girls`, `q=Children`, and `q=Self-Portrait` |
 | `architecture` | `q=Architecture` |
 | `painting` | `q=painting&medium=Paintings&isHighlight=true`; then `q=painting&medium=Paintings` |
 

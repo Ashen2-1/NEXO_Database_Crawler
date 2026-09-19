@@ -150,7 +150,15 @@ def main(argv: list[str] | None = None) -> int:
     adapter = args.adapter_class()
     try:
         if getattr(args, "target", None):
-            print(f"Discovering {adapter.source_name} targets: {', '.join(args.target)} ...")
+            scope_note = (
+                " (person scope: broad)"
+                if "person" in args.target and getattr(args, "person_scope", "standard") == "broad"
+                else ""
+            )
+            print(
+                f"Discovering {adapter.source_name} targets: "
+                f"{', '.join(args.target)}{scope_note} ..."
+            )
         elif getattr(args, "query", None):
             print(f"Searching {adapter.source_name} for {args.query!r} ...")
         elif getattr(args, "all_objects", False):

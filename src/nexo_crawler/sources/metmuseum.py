@@ -45,6 +45,17 @@ TARGET_SEARCHES: dict[str, list[dict[str, str]]] = {
     ],
 }
 
+# Optional wider person discovery. These searches intentionally avoid the unfiltered
+# Men/Women queries, which currently return tens of thousands of noisy keyword hits.
+PERSON_BROAD_SEARCHES: list[dict[str, str]] = [
+    {"q": "People", "hasImages": "true"},
+    {"q": "Human Figures", "hasImages": "true"},
+    {"q": "Boys", "hasImages": "true"},
+    {"q": "Girls", "hasImages": "true"},
+    {"q": "Children", "hasImages": "true"},
+    {"q": "Self-Portrait", "hasImages": "true"},
+]
+
 
 def _positive_object_id(value: str) -> str:
     """Parse and validate a positive numeric Met object ID for argparse."""
@@ -160,6 +171,16 @@ class MetMuseumAdapter(SourceAdapter):
             help="curated thematic discovery; repeat for multiple targets",
         )
         parser.add_argument(
+            "--person-scope",
+            choices=("standard", "broad"),
+            default="standard",
+            help=(
+                "person candidate discovery breadth: standard keeps portrait-focused searches; "
+                "broad also searches People, Human Figures, Boys, Girls, Children, and "
+                "Self-Portrait (requires --target person)"
+            ),
+        )
+        parser.add_argument(
             "--all",
             dest="all_objects",
             action="store_true",
@@ -187,6 +208,9 @@ class MetMuseumAdapter(SourceAdapter):
         """Collect Met IDs from direct inputs, search, or the bulk objects endpoint."""
         department_ids = args.department_id or []
         targets = ordered_unique(args.target or [])
+        person_scope = getattr(args, "person_scope", "standard")
+        if person_scope == "broad" and "person" not in targets:
+            raise ValueError("--person-scope broad requires --target person")
         if any(department_id <= 0 for department_id in department_ids):
             raise ValueError("--department-id values must be positive")
         has_explicit_ids = bool(args.object_id or args.ids_file is not None)
@@ -222,7 +246,10 @@ class MetMuseumAdapter(SourceAdapter):
             object_ids: list[str] = []
             searches: list[dict[str, Any]] = []
             for target in targets:
-                for parameters in TARGET_SEARCHES[target]:
+                target_searches = list(TARGET_SEARCHES[target])
+                if target == "person" and person_scope == "broad":
+                    target_searches.extend(PERSON_BROAD_SEARCHES)
+                for parameters in target_searches:
                     url = f"{API_BASE}/search?{urllib.parse.urlencode(parameters)}"
                     response = client.get_json(url)
                     values = response.get("objectIDs") or []
@@ -243,7 +270,11 @@ class MetMuseumAdapter(SourceAdapter):
             return DiscoveryResult(
                 source_ids=source_ids,
                 method="targets",
-                parameters={"targets": targets, "searches": searches},
+                parameters={
+                    "targets": targets,
+                    "person_scope": person_scope if "person" in targets else None,
+                    "searches": searches,
+                },
                 total_reported=len(source_ids),
             )
 

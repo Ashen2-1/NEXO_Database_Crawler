@@ -66,6 +66,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.limit, 100)
         self.assertEqual(args.max_examined, 5000)
 
+    def test_parser_accepts_broad_person_scope(self):
+        args = build_parser().parse_args(
+            ["metmuseum", "--target", "person", "--person-scope", "broad"]
+        )
+        self.assertEqual(args.person_scope, "broad")
+
     def test_reversed_year_range_is_rejected(self):
         with self.assertRaises(SystemExit):
             main(
