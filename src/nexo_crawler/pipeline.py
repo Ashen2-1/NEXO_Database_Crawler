@@ -39,6 +39,7 @@ class CrawlSummary:
     filtered: int
     failed: int
     limit_reached: bool
+    max_examined_reached: bool
 
 
 ProgressCallback = Callable[[int, int, str, str, Exception | None], None]
@@ -469,9 +470,10 @@ class CrawlPipeline:
         source_ids: Iterable[str],
         *,
         max_new: int,
+        max_examined: int | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> CrawlSummary:
-        """Process at most max_new incomplete objects; completed objects do not consume it."""
+        """Continue until max_new objects succeed, candidates end, or the safety cap is reached."""
         ids = list(source_ids)
         completed = 0
         created = 0
@@ -483,28 +485,28 @@ class CrawlPipeline:
         attempted = 0
         examined = 0
         limit_reached = False
+        max_examined_reached = False
 
         for position, source_id in enumerate(ids, 1):
-            examined = position
+            if completed >= max_new:
+                limit_reached = True
+                break
+            if max_examined is not None and examined >= max_examined:
+                max_examined_reached = True
+                break
+            examined += 1
             if self.is_complete(source_id):
                 skipped += 1
                 if on_progress is not None:
                     on_progress(position, len(ids), source_id, "skipped", None)
                 continue
-            if attempted >= max_new:
-                limit_reached = True
-                examined -= 1
-                break
-
             attempted += 1
             try:
                 result = self.crawl_one(source_id)
                 if result == "skipped":
                     skipped += 1
-                    attempted -= 1
                 elif result == "filtered":
                     filtered += 1
-                    attempted -= 1
                 else:
                     completed += 1
                     if result == "created":
@@ -532,4 +534,5 @@ class CrawlPipeline:
             filtered=filtered,
             failed=failed,
             limit_reached=limit_reached,
+            max_examined_reached=max_examined_reached,
         )

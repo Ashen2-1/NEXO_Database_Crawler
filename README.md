@@ -399,7 +399,7 @@ or `--include-results-without-images`.
 
 `--all` requests the Met `objects` endpoint and discovers the collection's available object IDs.
 It does not mean that every discovered object is processed in one invocation: the default
-`--limit 100` safety cap still applies.
+`--limit 100` success target still applies.
 
 ```powershell
 python crawler.py metmuseum --all
@@ -463,25 +463,36 @@ missing, no longer matches the source URL, or `--force` was requested.
 
 ### Batch size and automatic continuation
 
-`--limit` is the maximum number of source objects requiring work that are attempted in the
-current run. In an ordinary crawl, already complete objects are skipped. In a refresh job,
-objects already checked after the job started are skipped. Neither kind of skip consumes the
-limit. Failed attempts do consume it, preventing an error-heavy run from becoming unbounded.
+`--limit` is the target number of source objects that must complete successfully in the current
+run. Already-complete, filtered, and failed candidates do not consume this success quota. The
+crawler continues through the discovered candidate list until the target is reached or the list is
+exhausted. With the current Met adapter, one successful object produces one primary-image row.
 
 ```powershell
 python crawler.py metmuseum --all --limit 500
 ```
 
+For restrictive filters, use the optional `--max-examined` safety cap to bound the number of
+candidates inspected while still treating `--limit` as the success target:
+
+```powershell
+python crawler.py metmuseum --target person --year-from 1800 --year-to 2000 `
+  --require-creator --limit 100 --max-examined 5000
+```
+
+The completion message reports whether the success target was reached, the candidate list was
+exhausted, or `--max-examined` stopped the run. A finite source may contain fewer qualifying
+objects than requested, so `--limit` cannot create records that do not exist upstream.
+
 Run the same command again to continue. For example:
 
 ```text
-run 1: process the first 500 incomplete objects
-run 2: skip those 500 and process the next 500
-run 3: continue with the next incomplete objects
+run 1: save 500 qualifying objects, while skipping/filtering any others encountered
+run 2: skip those saved records and save up to 500 additional qualifying objects
+run 3: continue with the next incomplete candidates
 ```
 
-The crawler prints `Batch limit reached` when another incomplete object remains in the discovery
-result.
+The crawler prints `Success target reached` when the requested number completes successfully.
 
 ### Choose the dataset directory
 
@@ -645,7 +656,8 @@ Available common options are:
 
 | Option | Default | Meaning |
 |---|---:|---|
-| `--limit` | `100` | Maximum objects requiring work attempted in this run |
+| `--limit` | `100` | Target number of successfully completed objects in this run |
+| `--max-examined` | none | Optional safety cap on all candidate objects examined |
 | `--output` | `dataset` | Dataset output directory |
 | `--skip-images` | off | Save source metadata without image files |
 | `--require-image` | off | Export only rows with a successfully downloaded local image |

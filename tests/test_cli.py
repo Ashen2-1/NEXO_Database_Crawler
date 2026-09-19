@@ -48,6 +48,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.year_to, 2000)
         self.assertTrue(args.require_creator)
 
+    def test_parser_accepts_max_examined_safety_cap(self):
+        args = build_parser().parse_args(
+            ["metmuseum", "--object-id", "42", "--limit", "100", "--max-examined", "5000"]
+        )
+        self.assertEqual(args.limit, 100)
+        self.assertEqual(args.max_examined, 5000)
+
     def test_reversed_year_range_is_rejected(self):
         with self.assertRaises(SystemExit):
             main(

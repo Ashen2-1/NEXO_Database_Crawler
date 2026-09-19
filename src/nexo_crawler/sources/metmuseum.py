@@ -163,7 +163,7 @@ class MetMuseumAdapter(SourceAdapter):
             "--all",
             dest="all_objects",
             action="store_true",
-            help="discover all Met object IDs; processing is still capped by --limit",
+            help="discover all Met object IDs; --limit still sets the per-run success target",
         )
         parser.add_argument(
             "--department-id",

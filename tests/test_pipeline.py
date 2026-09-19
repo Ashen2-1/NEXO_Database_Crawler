@@ -375,9 +375,72 @@ class PipelineTests(unittest.TestCase):
 
             self.assertEqual(summary.filtered, 2)
             self.assertEqual(summary.completed, 1)
-            self.assertEqual(summary.attempted, 1)
+            self.assertEqual(summary.attempted, 3)
             self.assertEqual(client.image_requests, 1)
             self.assertTrue(storage.record_path("example", "accepted-primary").exists())
+
+    def test_failures_do_not_consume_success_limit(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+
+            def fetch(source_id, client):
+                if source_id == "failed":
+                    raise RuntimeError("temporary source failure")
+                return {"id": source_id, "title": source_id}
+
+            adapter.fetch = fetch
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=FakeClient(),
+                storage=storage,
+                skip_images=False,
+                force=False,
+            )
+
+            summary = pipeline.crawl_many(
+                ["failed", "one", "two", "not-examined"],
+                max_new=2,
+            )
+
+            self.assertEqual(summary.failed, 1)
+            self.assertEqual(summary.completed, 2)
+            self.assertEqual(summary.attempted, 3)
+            self.assertEqual(summary.examined, 3)
+            self.assertTrue(summary.limit_reached)
+            self.assertFalse(storage.raw_path("example", "not-examined").exists())
+
+    def test_max_examined_stops_before_success_target(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+            adapter.fetch = lambda source_id, client: {
+                "id": source_id,
+                "title": source_id,
+                "isPublicDomain": False,
+            }
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=FakeClient(),
+                storage=storage,
+                skip_images=False,
+                force=False,
+                public_domain_only=True,
+            )
+
+            summary = pipeline.crawl_many(
+                ["one", "two", "three"],
+                max_new=1,
+                max_examined=2,
+            )
+
+            self.assertEqual(summary.completed, 0)
+            self.assertEqual(summary.filtered, 2)
+            self.assertEqual(summary.examined, 2)
+            self.assertTrue(summary.max_examined_reached)
+            self.assertFalse(summary.limit_reached)
 
     def test_blocked_image_status_takes_precedence_over_missing_url(self):
         with self.temporary_directory() as temporary_directory:

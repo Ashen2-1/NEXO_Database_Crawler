@@ -34,7 +34,12 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         "--limit",
         type=positive_int,
         default=100,
-        help="maximum source objects requiring work attempted per run; skips do not count (default: 100)",
+        help="target number of successful source objects for this run (default: 100)",
+    )
+    parser.add_argument(
+        "--max-examined",
+        type=positive_int,
+        help="optional safety cap on all candidate objects examined in this run",
     )
     parser.add_argument("--output", type=Path, default=Path("dataset"), help="dataset directory")
     parser.add_argument("--skip-images", action="store_true", help="save metadata without image files")
@@ -216,9 +221,10 @@ def main(argv: list[str] | None = None) -> int:
         targets=tuple(getattr(args, "target", ()) or ()),
         refresh_after=refresh_state["started_at"] if refresh_state is not None else None,
     )
+    safety_cap = f" (examining at most {args.max_examined})" if args.max_examined else ""
     print(
-        f"Processing up to {args.limit} object(s) requiring work "
-        f"from {adapter.source_name} into {output_dir}"
+        f"Targeting {args.limit} successful object(s) from {adapter.source_name} "
+        f"into {output_dir}{safety_cap}"
     )
     show_individual_skips = len(discovery.source_ids) <= 100
 
@@ -250,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = pipeline.crawl_many(
         discovery.source_ids,
         max_new=args.limit,
+        max_examined=args.max_examined,
         on_progress=report_progress,
     )
 
@@ -273,7 +280,11 @@ def main(argv: list[str] | None = None) -> int:
             f"{summary.unchanged} unchanged."
         )
     if refresh_path is not None:
-        refresh_completed = not summary.limit_reached and summary.failed == 0
+        refresh_completed = (
+            not summary.limit_reached
+            and not summary.max_examined_reached
+            and summary.failed == 0
+        )
         storage.update_refresh_job(
             refresh_path,
             completed=refresh_completed,
@@ -289,9 +300,22 @@ def main(argv: list[str] | None = None) -> int:
                 "filtered": summary.filtered,
                 "failed": summary.failed,
                 "limit_reached": summary.limit_reached,
+                "max_examined_reached": summary.max_examined_reached,
             },
         )
         print(f"Refresh job status: {'completed' if refresh_completed else 'in progress'}.")
+    if summary.completed >= args.limit:
+        print(f"Success target reached: {summary.completed}/{args.limit}.")
+    elif summary.max_examined_reached:
+        print(
+            f"Success target not reached: {summary.completed}/{args.limit}; "
+            f"stopped after examining {summary.examined} candidate(s)."
+        )
+    else:
+        print(
+            f"Success target not reached: {summary.completed}/{args.limit}; "
+            "the discovered candidate list was exhausted."
+        )
     if summary.limit_reached:
-        print("Batch limit reached. Run the same command again to continue with the next incomplete objects.")
+        print("Run the same command again to continue with the next incomplete objects.")
     return 1 if summary.failed else 0
