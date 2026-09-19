@@ -252,6 +252,29 @@ python crawler.py --object-id 437329
 
 The examples below use the explicit `metmuseum` source form.
 
+### Recommended strict person-dataset command
+
+For the current NEXO person dataset, use the broad candidate scope together with all strict
+training-row requirements:
+
+```powershell
+python crawler.py metmuseum --target person `
+  --person-scope broad `
+  --year-from 1800 --year-to 2000 `
+  --require-creator `
+  --public-domain-only `
+  --require-image `
+  --require-description `
+  --limit 200 `
+  --max-examined 5000 `
+  --request-delay 1.0 `
+  --output dataset_targeted
+```
+
+Here `--limit 200` means 200 qualifying rows in the final export, including qualifying rows that
+already exist in `dataset_targeted`. If the run stops at the examination cap before reaching the
+target, increase `--max-examined` and run the otherwise identical command again.
+
 ## Met discovery modes
 
 At least one discovery mode is required. The crawler never interprets an empty command as
@@ -337,7 +360,7 @@ because the broader search produces a substantially larger candidate list.
 For a training-ready public-domain image batch with source-grounded short descriptions:
 
 ```powershell
-python crawler.py metmuseum --target person --limit 150 `
+python crawler.py metmuseum --target person --person-scope broad --limit 150 `
   --public-domain-only --enrich-descriptions --output dataset_targeted
 ```
 
@@ -496,7 +519,8 @@ For restrictive filters, use the optional `--max-examined` safety cap to bound t
 candidates inspected while still treating `--limit` as the final dataset target:
 
 ```powershell
-python crawler.py metmuseum --target person --year-from 1800 --year-to 2000 `
+python crawler.py metmuseum --target person --person-scope broad `
+  --year-from 1800 --year-to 2000 `
   --require-creator --limit 100 --max-examined 5000
 ```
 
@@ -572,7 +596,8 @@ record has multiple creators, the CSV convenience fields come from the first cre
 For example, to keep named creators whose work overlaps 1800-2000:
 
 ```powershell
-python crawler.py metmuseum --target person --year-from 1800 --year-to 2000 `
+python crawler.py metmuseum --target person --person-scope broad `
+  --year-from 1800 --year-to 2000 `
   --require-creator --limit 150 --output dataset_targeted
 ```
 
@@ -616,9 +641,10 @@ with AI.
 Use both strict requirements for a training export in which every row has both artifacts:
 
 ```powershell
-python crawler.py metmuseum --target person --limit 150 `
+python crawler.py metmuseum --target person --person-scope broad --limit 200 `
   --public-domain-only --require-image --require-description `
   --year-from 1800 --year-to 2000 --require-creator `
+  --max-examined 5000 --request-delay 1.0 `
   --output dataset_targeted
 ```
 
@@ -700,6 +726,12 @@ Available common options are:
 | `--retries` | `3` | Retries for temporary HTTP failures |
 | `--request-delay` | `1.0` | Minimum seconds between requests; raised to at least 1.0 after a recovered 403 |
 | `--user-agent` | NEXO default | HTTP User-Agent header |
+
+Relevant Met-specific option:
+
+| Option | Default | Meaning |
+|---|---:|---|
+| `--person-scope` | `standard` | With `--target person`, use `broad` to add People, Human Figures, Boys, Girls, Children, and Self-Portrait candidate searches |
 
 Run `python crawler.py --help` for source selection help, or
 `python crawler.py metmuseum --help` for every Met and common option.
