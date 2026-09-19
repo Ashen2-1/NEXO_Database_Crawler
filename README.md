@@ -129,15 +129,20 @@ file under `records/`, serialized without indentation. Training code never needs
 to `records/`. The per-record files exist for atomic updates and resume behavior; JSONL exists for
 batch consumption.
 
-Every completed run also rebuilds `metadata.csv` for training tools that prefer tabular input.
-It contains the same records in the same `record_id` order. Nested scalar fields use names such
-as `source_object_id`, `image_status`, and `rights_public_domain`; the training image column is
-named `image` and contains the dataset-relative local image path. Missing values are empty cells.
-Common and Met-provided fields are expanded into explicit columns, including `classification`,
-creator details, creation dates, material, dimensions, culture, period, dynasty,
-country, region, subregion, locale, city, state, county, department, repository, accession data,
-rights, source URLs, image provenance, and Wikidata identifiers. All columns are always present;
-unavailable values are empty.
+Every completed run also rebuilds two flat tables in the same `record_id` order. The training image
+column is named `image` and contains the dataset-relative local image path. Missing values are empty
+cells.
+
+- `metadata_full.csv` is the complete operational/research table. It includes content, source and
+  description provenance, rights, image delivery metadata, external identifiers, crawl fields, and
+  annotation-review fields.
+- `metadata_ai.csv` is the content-only table intended for AI/model input. It keeps the local image
+  path and descriptive artwork/creator fields, but excludes source/original links, all URL columns,
+  source provenance, rights and crawl bookkeeping, image hashes/delivery metadata, and
+  `annotation_status`, `annotation_method`, `annotation_reviewed`, and `annotation_note`.
+
+`constituent_genders` is not exported in either table. Other common and Met-provided values remain
+available in the full table, and the lossless nested source structures remain in JSON.
 
 Description provenance is explicit in `description_status`, `description_source`,
 `description_source_url`, and `description_language`. `description_status` is one of:
@@ -152,7 +157,7 @@ artwork description. This avoids attaching a plausible but incorrect entity to a
 Wikidata descriptions are short source metadata, not detailed visual captions; their quality and
 specificity still need to be evaluated for the intended training task.
 
-`metadata.csv` contains no nested JSON cells. Creator data is exposed through scalar columns such
+Neither CSV contains nested JSON cells. Creator data is exposed through scalar columns such
 as `creator_name` and `creator_nationality`. Multi-value tags, additional-image URLs, and constituent
 fields use ` | ` as a separator and include corresponding count columns. The nested `creators`,
 `measurements`, `tag_details`, `constituents`, and complete `source_metadata` structures remain in
@@ -165,7 +170,8 @@ keeps `dimensions`; JSONL retains both.
 
 CSV quoting is handled automatically, including commas, quotation marks, Unicode text, and
 newlines inside descriptions. Training code should normally keep rows where
-`image_status == "downloaded"`; rows without downloadable images remain in both metadata exports
+`image_status == "downloaded"` in the full table; rows without downloadable images remain in all
+metadata exports
 so the source crawl stays complete and auditable. Alternatively, use the strict `--require-image`
 and `--require-description` export requirements documented below.
 
@@ -192,7 +198,8 @@ dataset/
 |   `-- metmuseum/
 |       `-- refresh-a1b2c3d4e5f6.json
 |-- metadata.jsonl
-|-- metadata.csv
+|-- metadata_full.csv
+|-- metadata_ai.csv
 `-- crawl_manifest.jsonl
 ```
 
@@ -519,7 +526,23 @@ not fabricate missing descriptions. Use `description_status == "available"` to s
 rows; keep the status columns so training code can distinguish missing source data from a run that
 did not request enrichment.
 
-### Strict image and description requirements
+### Year, creator, image, and description filters
+
+Use `--year-from` and `--year-to` together or independently to select a creation-year range. A
+record is kept when its known `creation_start_year` / `creation_end_year` interval overlaps the
+requested interval. This overlap rule preserves approximate dates: for example, a work dated
+1790-1810 is included by `--year-from 1800`. Records with no numeric creation year are excluded
+whenever either year filter is active.
+
+Use `--require-creator` to keep only rows that contain at least one non-empty creator name. When a
+record has multiple creators, the CSV convenience fields come from the first creator with a name.
+
+For example, to keep named creators whose work overlaps 1800-2000:
+
+```powershell
+python crawler.py metmuseum --target person --year-from 1800 --year-to 2000 `
+  --require-creator --limit 150 --output dataset_targeted
+```
 
 Use `--require-image` when every exported training row must have an image that was successfully
 downloaded and still exists locally:
@@ -563,17 +586,19 @@ Use both strict requirements for a training export in which every row has both a
 ```powershell
 python crawler.py metmuseum --target person --limit 150 `
   --public-domain-only --require-image --require-description `
+  --year-from 1800 --year-to 2000 --require-creator `
   --output dataset_targeted
 ```
 
 Strict requirements affect two layers:
 
 1. During crawling, candidates that fail a requirement are recorded in `crawl_manifest.jsonl` as
-   `filtered_missing_required_image` or `filtered_missing_required_description`; they do not count
-   toward `--limit` and do not create a new canonical record.
-2. When `metadata.jsonl` and `metadata.csv` are rebuilt, every existing record under `records/` is
-   checked again. Records that do not satisfy the active strict requirements are excluded from that
-   run's exports, even if they were created by an older non-strict run.
+   `filtered_missing_required_image`, `filtered_missing_required_description`,
+   `filtered_missing_creator`, or `filtered_creation_year`; they do not count toward `--limit` and
+   do not create a new canonical record.
+2. When `metadata.jsonl`, `metadata_full.csv`, and `metadata_ai.csv` are rebuilt, every existing
+   record under `records/` is checked again. Records that do not satisfy the active requirements are
+   excluded from that run's exports, even if they were created by an older non-strict run.
 
 Strict export does not delete older `records/`, `raw/`, enrichment caches, or image files. This
 preserves crawl provenance and makes the operation reversible. Running a later command without the
@@ -627,6 +652,9 @@ Available common options are:
 | `--public-domain-only` | off | Exclude objects not explicitly marked public domain |
 | `--enrich-descriptions` | off | Fetch exact-entity source descriptions when supported |
 | `--require-description` | off | Enrich, then export only rows with a non-empty sourced description |
+| `--year-from` | none | Keep records whose known creation interval overlaps this year or later |
+| `--year-to` | none | Keep records whose known creation interval overlaps this year or earlier |
+| `--require-creator` | off | Keep only records with at least one non-empty creator name |
 | `--force` | off | Refresh metadata and download images again in a resumable job |
 | `--timeout` | `30` | Per-request timeout in seconds |
 | `--retries` | `3` | Retries for temporary HTTP failures |
@@ -639,8 +667,8 @@ Run `python crawler.py --help` for source selection help, or
 ## Resume and rights behavior
 
 Complete records are skipped on later ordinary runs. Raw responses cached before an interrupted
-image download are reused, and `metadata.jsonl` plus `metadata.csv` are rebuilt from individual
-record files so they do not accumulate duplicate rows.
+image download are reused, and `metadata.jsonl`, `metadata_full.csv`, plus `metadata_ai.csv` are
+rebuilt from individual record files so they do not accumulate duplicate rows.
 
 When the canonical schema version changes, older records are treated as incomplete and normalized
 again from their cached `raw/` response. An unchanged downloaded image is reused, so a schema
@@ -669,6 +697,7 @@ The CLI rejects ambiguous or unsupported combinations:
 - more than one `--department-id` in query mode;
 - `--include-results-without-images` without `--query`;
 - `--require-image` with `--skip-images`;
+- `--year-from` greater than `--year-to`;
 - `--target` combined with IDs, `--query`, `--all`, departments, update dates, or image overrides;
 - zero or negative limits, timeouts, department IDs, or object IDs.
 

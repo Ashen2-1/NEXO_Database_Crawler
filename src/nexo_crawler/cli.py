@@ -59,6 +59,21 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         help="enrich descriptions and export only records with a non-empty sourced description",
     )
     parser.add_argument(
+        "--year-from",
+        type=int,
+        help="keep records whose creation interval overlaps this year or later",
+    )
+    parser.add_argument(
+        "--year-to",
+        type=int,
+        help="keep records whose creation interval overlaps this year or earlier",
+    )
+    parser.add_argument(
+        "--require-creator",
+        action="store_true",
+        help="keep only records with at least one non-empty creator name",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="start or resume a refresh job and download images again",
@@ -111,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--timeout must be greater than zero")
     if args.require_image and args.skip_images:
         parser.error("--require-image cannot be combined with --skip-images")
+    if args.year_from is not None and args.year_to is not None and args.year_from > args.year_to:
+        parser.error("--year-from cannot be greater than --year-to")
 
     enrich_descriptions = args.enrich_descriptions or args.require_description
 
@@ -160,6 +177,9 @@ def main(argv: list[str] | None = None) -> int:
             "parameters": discovery.parameters,
             "request_url": discovery.request_url,
             "force": bool(args.force),
+            "year_from": args.year_from,
+            "year_to": args.year_to,
+            "require_creator": args.require_creator,
         }
         refresh_path, refresh_state, resumed = storage.start_or_resume_refresh(
             adapter.source_key,
@@ -190,6 +210,9 @@ def main(argv: list[str] | None = None) -> int:
         public_domain_only=args.public_domain_only,
         require_image=args.require_image,
         require_description=args.require_description,
+        require_creator=args.require_creator,
+        year_from=args.year_from,
+        year_to=args.year_to,
         targets=tuple(getattr(args, "target", ()) or ()),
         refresh_after=refresh_state["started_at"] if refresh_state is not None else None,
     )
@@ -233,12 +256,16 @@ def main(argv: list[str] | None = None) -> int:
     metadata_count = storage.rebuild_metadata(
         require_image=args.require_image,
         require_description=args.require_description,
+        require_creator=args.require_creator,
+        year_from=args.year_from,
+        year_to=args.year_to,
     )
     print(
         f"Done: {summary.completed} completed, {summary.skipped} skipped, "
         f"{summary.filtered} filtered, "
         f"{summary.failed} failed; "
-        f"metadata.jsonl and metadata.csv contain {metadata_count} record(s)."
+        f"metadata.jsonl, metadata_full.csv, and metadata_ai.csv contain "
+        f"{metadata_count} record(s)."
     )
     if summary.completed:
         print(

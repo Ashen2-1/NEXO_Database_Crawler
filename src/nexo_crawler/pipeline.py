@@ -11,7 +11,14 @@ from typing import Any, Callable, Iterable
 from .http import HttpClient
 from .models import ImageInfo
 from .sources.base import ImageCandidate, NormalizationContext, SourceAdapter
-from .storage import DatasetStorage, atomic_write_bytes, image_extension
+from .storage import (
+    DatasetStorage,
+    atomic_write_bytes,
+    image_extension,
+    record_has_creator_name,
+    record_matches_export_filters,
+    record_matches_year_range,
+)
 
 
 def utc_now() -> str:
@@ -50,6 +57,9 @@ class CrawlPipeline:
         public_domain_only: bool = False,
         require_image: bool = False,
         require_description: bool = False,
+        require_creator: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
         targets: tuple[str, ...] = (),
         refresh_after: str | None = None,
     ) -> None:
@@ -65,6 +75,9 @@ class CrawlPipeline:
         self.public_domain_only = public_domain_only
         self.require_image = require_image
         self.require_description = require_description
+        self.require_creator = require_creator
+        self.year_from = year_from
+        self.year_to = year_to
         self.targets = targets
         self.refresh_after = refresh_after
 
@@ -79,6 +92,9 @@ class CrawlPipeline:
             require_description_enrichment=self.enrich_descriptions,
             require_image=self.require_image,
             require_description=self.require_description,
+            require_creator=self.require_creator,
+            year_from=self.year_from,
+            year_to=self.year_to,
         )
 
     def is_complete(self, source_id: str) -> bool:
@@ -290,6 +306,55 @@ class CrawlPipeline:
             if not candidates:
                 raise ValueError(f"{self.adapter.display_reference(source_id)} produced no image samples")
 
+            if self.require_creator or self.year_from is not None or self.year_to is not None:
+                candidate = candidates[0]
+                identity = self.adapter.identity(source_id, candidate)
+                preview_context = NormalizationContext(
+                    identity=identity,
+                    retrieved_at=retrieved_at,
+                    raw_path=self.storage.relative_path(raw_path),
+                    image=ImageInfo(
+                        role=candidate.role,
+                        status=candidate.blocked_status if not candidate.download_allowed else "skipped",
+                        source_url=candidate.source_url,
+                    ),
+                    enrichment_requested=self.enrich_descriptions,
+                    enrichment=enrichment,
+                )
+                preview = self.adapter.normalize(source_id, raw, preview_context).to_dict()
+                if not record_matches_export_filters(
+                    preview,
+                    require_creator=self.require_creator,
+                    year_from=self.year_from,
+                    year_to=self.year_to,
+                ):
+                    missing_creator = self.require_creator and not record_has_creator_name(preview)
+                    outside_year_range = not record_matches_year_range(
+                        preview, self.year_from, self.year_to
+                    )
+                    self.storage.append_manifest(
+                        {
+                            "timestamp": utc_now(),
+                            "source": self.adapter.source_key,
+                            "source_object_id": source_id,
+                            "source_api_url": source_api_url,
+                            "status": (
+                                "filtered_missing_creator"
+                                if missing_creator
+                                else "filtered_creation_year"
+                            ),
+                            "year_from": self.year_from,
+                            "year_to": self.year_to,
+                            "creation_start_year": preview.get("creation_date", {}).get(
+                                "start_year"
+                            ),
+                            "creation_end_year": preview.get("creation_date", {}).get("end_year"),
+                            "missing_creator": missing_creator,
+                            "outside_year_range": outside_year_range,
+                        }
+                    )
+                    return "filtered"
+
             image_statuses: list[str] = []
             accepted_images = 0
             for candidate in candidates:
@@ -304,6 +369,9 @@ class CrawlPipeline:
                         require_description_enrichment=self.enrich_descriptions,
                         require_image=self.require_image,
                         require_description=self.require_description,
+                        require_creator=self.require_creator,
+                        year_from=self.year_from,
+                        year_to=self.year_to,
                     )
                 ):
                     existing = self.storage.read_json(record_path)
@@ -331,7 +399,7 @@ class CrawlPipeline:
                 self.storage.write_json(record_path, record.to_dict())
                 accepted_images += 1
 
-            if self.require_image and accepted_images == 0:
+            if self.require_image and "downloaded" not in image_statuses:
                 self.storage.append_manifest(
                     {
                         "timestamp": utc_now(),

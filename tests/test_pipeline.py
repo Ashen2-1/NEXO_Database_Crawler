@@ -6,7 +6,7 @@ import urllib.error
 from pathlib import Path
 
 from nexo_crawler.http import HttpResponse
-from nexo_crawler.models import CanonicalRecord, SourceInfo
+from nexo_crawler.models import CanonicalRecord, CreationDateInfo, CreatorInfo, SourceInfo
 from nexo_crawler.pipeline import CrawlPipeline, utc_now
 from nexo_crawler.sources.base import (
     DiscoveryResult,
@@ -85,6 +85,11 @@ class FakeAdapter(SourceAdapter):
             description_source=context.enrichment.get("description_source"),
             description_source_url=context.enrichment.get("description_source_url"),
             description_language=context.enrichment.get("description_language"),
+            creators=([CreatorInfo(name=raw["creator_name"])] if raw.get("creator_name") else None),
+            creation_date=CreationDateInfo(
+                start_year=raw.get("start_year"),
+                end_year=raw.get("end_year"),
+            ),
         )
 
     def api_url(self, source_id):
@@ -327,6 +332,52 @@ class PipelineTests(unittest.TestCase):
                     force=False,
                     require_image=True,
                 )
+
+    def test_year_and_creator_filters_reject_without_consuming_limit(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            adapter = FakeAdapter()
+
+            def fetch(source_id, client):
+                values = {
+                    "anonymous": {"start_year": 1900, "end_year": 1900},
+                    "too-old": {
+                        "creator_name": "Old Artist",
+                        "start_year": 1700,
+                        "end_year": 1750,
+                    },
+                    "accepted": {
+                        "creator_name": "Accepted Artist",
+                        "start_year": 1790,
+                        "end_year": 1810,
+                    },
+                }
+                return {"id": source_id, "title": source_id, **values[source_id]}
+
+            adapter.fetch = fetch
+            client = FakeClient()
+            pipeline = CrawlPipeline(
+                adapter=adapter,
+                client=client,
+                storage=storage,
+                skip_images=False,
+                force=False,
+                require_creator=True,
+                year_from=1800,
+                year_to=2000,
+            )
+
+            summary = pipeline.crawl_many(
+                ["anonymous", "too-old", "accepted"],
+                max_new=1,
+            )
+
+            self.assertEqual(summary.filtered, 2)
+            self.assertEqual(summary.completed, 1)
+            self.assertEqual(summary.attempted, 1)
+            self.assertEqual(client.image_requests, 1)
+            self.assertTrue(storage.record_path("example", "accepted-primary").exists())
 
     def test_blocked_image_status_takes_precedence_over_missing_url(self):
         with self.temporary_directory() as temporary_directory:

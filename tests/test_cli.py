@@ -31,6 +31,37 @@ class CliTests(unittest.TestCase):
         self.assertTrue(args.require_image)
         self.assertTrue(args.require_description)
 
+    def test_parser_accepts_year_and_creator_filters(self):
+        args = build_parser().parse_args(
+            [
+                "metmuseum",
+                "--object-id",
+                "42",
+                "--year-from",
+                "1800",
+                "--year-to",
+                "2000",
+                "--require-creator",
+            ]
+        )
+        self.assertEqual(args.year_from, 1800)
+        self.assertEqual(args.year_to, 2000)
+        self.assertTrue(args.require_creator)
+
+    def test_reversed_year_range_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            main(
+                [
+                    "metmuseum",
+                    "--object-id",
+                    "42",
+                    "--year-from",
+                    "2000",
+                    "--year-to",
+                    "1800",
+                ]
+            )
+
     def test_require_image_cannot_be_combined_with_skip_images(self):
         with self.assertRaises(SystemExit):
             main(

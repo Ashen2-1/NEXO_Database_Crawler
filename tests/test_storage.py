@@ -136,6 +136,22 @@ class StorageTests(unittest.TestCase):
             self.assertNotIn("tag_details", row)
             self.assertNotIn("constituents", row)
             self.assertNotIn("source_metadata", row)
+            self.assertNotIn("constituent_genders", row)
+
+            with storage.ai_metadata_csv_path.open(encoding="utf-8", newline="") as handle:
+                ai_row = next(csv.DictReader(handle))
+            self.assertEqual(ai_row["creator_name"], "Example Artist")
+            self.assertEqual(ai_row["description"], "First line\nSecond line")
+            self.assertNotIn("source_page_url", ai_row)
+            self.assertNotIn("image_source_url", ai_row)
+            self.assertNotIn("description_source_url", ai_row)
+            self.assertNotIn("annotation_status", ai_row)
+            self.assertNotIn("annotation_method", ai_row)
+            self.assertNotIn("annotation_reviewed", ai_row)
+            self.assertNotIn("annotation_note", ai_row)
+            self.assertFalse(any(column.endswith("_url") for column in ai_row))
+            self.assertFalse(any(column.startswith("source_") for column in ai_row))
+            self.assertFalse(any(column.startswith("rights_") for column in ai_row))
 
     def test_strict_rebuild_filters_exports_without_deleting_records(self):
         with self.temporary_directory() as temporary_directory:
@@ -179,6 +195,43 @@ class StorageTests(unittest.TestCase):
             )
             self.assertTrue(storage.record_path("example", "incomplete-primary").exists())
             self.assertEqual(storage.rebuild_metadata(), 2)
+
+    def test_content_filters_apply_to_existing_records(self):
+        with self.temporary_directory() as temporary_directory:
+            storage = DatasetStorage(Path(temporary_directory))
+            storage.prepare("example")
+            records = [
+                ("inside", "Named Artist", 1790, 1810),
+                ("outside", "Other Artist", 1700, 1750),
+                ("anonymous", None, 1900, 1900),
+                ("undated", "Known Artist", None, None),
+            ]
+            for record_id, creator_name, start_year, end_year in records:
+                storage.write_json(
+                    storage.record_path("example", record_id),
+                    {
+                        "record_id": f"example:{record_id}:primary",
+                        "creators": ([{"name": creator_name}] if creator_name else None),
+                        "creation_date": {
+                            "start_year": start_year,
+                            "end_year": end_year,
+                        },
+                    },
+                )
+
+            self.assertEqual(
+                storage.rebuild_metadata(
+                    require_creator=True,
+                    year_from=1800,
+                    year_to=2000,
+                ),
+                1,
+            )
+            exported = [
+                json.loads(line)
+                for line in storage.metadata_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual([record["record_id"] for record in exported], ["example:inside:primary"])
 
     def test_resume_check_requires_downloaded_image_file(self):
         with self.temporary_directory() as temporary_directory:

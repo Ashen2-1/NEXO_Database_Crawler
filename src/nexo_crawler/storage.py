@@ -15,7 +15,7 @@ from typing import Any
 from .models import SCHEMA_VERSION
 
 
-CSV_COLUMNS = [
+FULL_CSV_COLUMNS = [
     "record_id",
     "image",
     "description",
@@ -107,13 +107,80 @@ CSV_COLUMNS = [
     "constituent_count",
     "constituent_names",
     "constituent_roles",
-    "constituent_genders",
     "constituent_ulan_urls",
     "constituent_wikidata_urls",
     "metadata_date",
     "crawler_version",
     "schema_version",
 ]
+
+# Deliberately explicit: this is the content-only table intended for model input.
+# Source/provenance links, crawl bookkeeping, rights data, review annotations, and
+# other delivery-only fields stay available in metadata_full.csv.
+AI_CSV_COLUMNS = [
+    "record_id",
+    "image",
+    "description",
+    "description_language",
+    "title",
+    "object_type",
+    "category",
+    "classification",
+    "creator_count",
+    "creator_name",
+    "creator_role",
+    "creator_attribution",
+    "creator_suffix",
+    "creator_sort_name",
+    "creator_biography",
+    "creator_nationality",
+    "creator_birth_year",
+    "creator_death_year",
+    "creator_gender",
+    "creation_date",
+    "creation_start_year",
+    "creation_end_year",
+    "material",
+    "dimensions",
+    "culture",
+    "period",
+    "dynasty",
+    "reign",
+    "portfolio",
+    "country",
+    "region",
+    "subregion",
+    "locale",
+    "city",
+    "state",
+    "county",
+    "geography_type",
+    "locus",
+    "excavation",
+    "river",
+    "brand",
+    "model",
+    "catalog_number",
+    "accession_year",
+    "department",
+    "repository",
+    "gallery_number",
+    "tags",
+    "tag_count",
+    "is_highlight",
+    "is_timeline_work",
+    "target_person",
+    "target_architecture",
+    "target_painting",
+    "wikidata_label",
+    "image_role",
+    "constituent_count",
+    "constituent_names",
+    "constituent_roles",
+]
+
+# Backwards-compatible import name for callers that used the old constant.
+CSV_COLUMNS = FULL_CSV_COLUMNS
 
 
 def _nested(value: dict[str, Any], *keys: str) -> Any:
@@ -144,11 +211,56 @@ def _record_or_source_metadata(record: dict[str, Any], key: str) -> Any:
 
 
 def _first_creator(record: dict[str, Any], key: str) -> Any:
-    """Return a convenience scalar from the first creator while retaining creators JSON."""
+    """Return a scalar from the first creator that has a non-empty name."""
     creators = record.get("creators")
-    if not isinstance(creators, list) or not creators or not isinstance(creators[0], dict):
+    if not isinstance(creators, list):
         return None
-    return creators[0].get(key)
+    for creator in creators:
+        if (
+            isinstance(creator, dict)
+            and isinstance(creator.get("name"), str)
+            and creator["name"].strip()
+        ):
+            return creator.get(key)
+    return None
+
+
+def record_has_creator_name(record: dict[str, Any]) -> bool:
+    """Return whether a canonical record has at least one non-empty creator name."""
+    return _first_creator(record, "name") is not None
+
+
+def record_matches_year_range(
+    record: dict[str, Any],
+    year_from: int | None,
+    year_to: int | None,
+) -> bool:
+    """Return whether a record's known creation interval overlaps the requested range."""
+    if year_from is None and year_to is None:
+        return True
+    start = _nested(record, "creation_date", "start_year")
+    end = _nested(record, "creation_date", "end_year")
+    years = [year for year in (start, end) if isinstance(year, int) and not isinstance(year, bool)]
+    if not years:
+        return False
+    record_start = min(years)
+    record_end = max(years)
+    return (year_from is None or record_end >= year_from) and (
+        year_to is None or record_start <= year_to
+    )
+
+
+def record_matches_export_filters(
+    record: dict[str, Any],
+    *,
+    require_creator: bool = False,
+    year_from: int | None = None,
+    year_to: int | None = None,
+) -> bool:
+    """Apply reusable content filters to a canonical record."""
+    return (not require_creator or record_has_creator_name(record)) and record_matches_year_range(
+        record, year_from, year_to
+    )
 
 
 def _list_count(value: Any) -> int:
@@ -280,9 +392,6 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "constituent_roles": _joined_dict_values(
             _nested(record, "source_metadata", "constituents"), "role"
         ),
-        "constituent_genders": _joined_dict_values(
-            _nested(record, "source_metadata", "constituents"), "gender"
-        ),
         "constituent_ulan_urls": _joined_dict_values(
             _nested(record, "source_metadata", "constituents"), "constituentULAN_URL"
         ),
@@ -293,7 +402,7 @@ def record_to_csv_row(record: dict[str, Any]) -> dict[str, str | int | float]:
         "crawler_version": record.get("crawler_version"),
         "schema_version": record.get("schema_version"),
     }
-    return {column: _csv_value(values[column]) for column in CSV_COLUMNS}
+    return {column: _csv_value(values[column]) for column in FULL_CSV_COLUMNS}
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -337,7 +446,8 @@ class DatasetStorage:
         self.discovery_dir = output_dir / "discovery"
         self.state_dir = output_dir / "state"
         self.metadata_path = output_dir / "metadata.jsonl"
-        self.metadata_csv_path = output_dir / "metadata.csv"
+        self.metadata_csv_path = output_dir / "metadata_full.csv"
+        self.ai_metadata_csv_path = output_dir / "metadata_ai.csv"
         self.manifest_path = output_dir / "crawl_manifest.jsonl"
 
     def prepare(self, source_key: str) -> None:
@@ -417,6 +527,9 @@ class DatasetStorage:
         require_description_enrichment: bool = False,
         require_image: bool = False,
         require_description: bool = False,
+        require_creator: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
     ) -> bool:
         """Return whether an existing record satisfies resume/skip criteria."""
         if not record_path.exists():
@@ -434,6 +547,13 @@ class DatasetStorage:
             record.get("description_status") != "available"
             or not isinstance(record.get("description"), str)
             or not record["description"].strip()
+        ):
+            return False
+        if not record_matches_export_filters(
+            record,
+            require_creator=require_creator,
+            year_from=year_from,
+            year_to=year_to,
         ):
             return False
 
@@ -517,6 +637,9 @@ class DatasetStorage:
         *,
         require_image: bool = False,
         require_description: bool = False,
+        require_creator: bool = False,
+        year_from: int | None = None,
+        year_to: int | None = None,
     ) -> int:
         """Rebuild exports, optionally enforcing strict training-record requirements."""
         records: list[dict[str, Any]] = []
@@ -547,6 +670,13 @@ class DatasetStorage:
                     or not value["description"].strip()
                 ):
                     continue
+                if not record_matches_export_filters(
+                    value,
+                    require_creator=require_creator,
+                    year_from=year_from,
+                    year_to=year_to,
+                ):
+                    continue
                 records.append(value)
         records.sort(key=lambda record: str(record.get("record_id", "")))
         body = "".join(
@@ -556,8 +686,17 @@ class DatasetStorage:
         atomic_write_bytes(self.metadata_path, body.encode("utf-8"))
 
         csv_body = io.StringIO(newline="")
-        writer = csv.DictWriter(csv_body, fieldnames=CSV_COLUMNS, lineterminator="\n")
+        writer = csv.DictWriter(csv_body, fieldnames=FULL_CSV_COLUMNS, lineterminator="\n")
         writer.writeheader()
         writer.writerows(record_to_csv_row(record) for record in records)
         atomic_write_bytes(self.metadata_csv_path, csv_body.getvalue().encode("utf-8"))
+
+        ai_csv_body = io.StringIO(newline="")
+        ai_writer = csv.DictWriter(ai_csv_body, fieldnames=AI_CSV_COLUMNS, lineterminator="\n")
+        ai_writer.writeheader()
+        ai_writer.writerows(
+            {column: row[column] for column in AI_CSV_COLUMNS}
+            for row in (record_to_csv_row(record) for record in records)
+        )
+        atomic_write_bytes(self.ai_metadata_csv_path, ai_csv_body.getvalue().encode("utf-8"))
         return len(records)
